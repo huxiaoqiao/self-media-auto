@@ -1,0 +1,43 @@
+# Claude local settings
+.claude/
+
+# Drafts and personal data
+drafts/
+assets/
+
+# Workflow state
+.workflow_state.json
+
+# System files
+Thumbs.db
+.DS_Store
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Environment variables (contains API keys)
+.env
+
+# node_modules
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
