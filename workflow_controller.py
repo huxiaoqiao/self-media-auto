@@ -629,7 +629,10 @@ class SelfMediaController:
                     "## 第一部分：【爆款短视频脚本】\n"
                     "- 简明扼要，适合口播。提取文章的灵魂反常识观点。短句为主，不用“很多”等虚词。\n\n"
                     "## 第二部分：【深度长文（正文）】\n"
-                    "- 严格遵循以下【IP爆款写作规范】和结构要求：\n\n"
+                    "- 严格遵循以下【IP爆款写作规范】和结构要求（注意：在正文中严禁出现“## 第二部分”或“【深度长文（正文）】”等字眼）：\n\n"
+                    "### 零、标题规范\n"
+                    "- 在正文最开头，请输出：[文章标题] 这里的具体标题内容。\n"
+                    "- 标题要求：极具点击欲望，反常识、引发焦虑或提供极高情绪价值（15-28字以内）。\n\n"
                     "### 一、开篇结构\n"
                     "- 简短标题句（1-3个字或一句话），直接点明主题。\n"
                     f"- 固定开场白：\"hi，我是{author_ip_name}\"（建立个人品牌标识）。\n"
@@ -684,12 +687,24 @@ class SelfMediaController:
         # 提取脚本部分
         video_script = ""
         article_content = ""
+        new_title = ""
         
-        if "## 第一部分" in final_content and "## 第二部分" in final_content:
+        if "## 第二部分" in final_content:
             parts = final_content.split("## 第二部分")
             video_script = parts[0].replace("## 第一部分：", "").replace("## 第一部分", "").strip()
-            article_content = "## 第二部分" + parts[1]
-            article_content = article_content.replace("## 第二部分：", "").replace("## 第二部分", "").strip()
+            article_content = parts[1].replace("：", "", 1).strip()
+            
+            # 彻底清理正文开头的标识词
+            article_content = article_content.replace("【深度长文（正文）】", "").replace("## 第二部分", "").strip()
+            
+            # 使用正则提取 [文章标题] 后面的内容
+            import re
+            title_match = re.search(r"\[文章标题\]\s*(.*)", article_content)
+            if title_match:
+                new_title = title_match.group(1).strip()
+                # 去掉内容中的 [文章标题] 标记行
+                article_content = re.sub(r"\[文章标题\].*", "", article_content, count=1).strip()
+                print(f"🔥 捕获到全新爆款标题: {new_title}")
         else:
             article_content = final_content
 
@@ -699,11 +714,16 @@ class SelfMediaController:
         with open(script_path, "w", encoding='utf-8') as f:
             f.write(video_script if video_script else "未生成有效脚本")
             
-        # 写入图文长稿到本地 drafts 文件夹
+        # 写入图文长稿到本地 drafts 文件夹 (增加一级标题)
         article_name = f"article_{time_slug}.md"
         article_path = os.path.join(drafts_dir, article_name)
         with open(article_path, "w", encoding='utf-8') as f:
+            if new_title:
+                f.write(f"# {new_title}\n\n")
             f.write(article_content)
+
+        if new_title:
+            selected['title'] = new_title # 更新状态中的标题
 
         print(f"\n✅ 内容拆分完成：")
         print(f"   🎬 爆款脚本: {script_path}")
@@ -738,7 +758,6 @@ class SelfMediaController:
             }
             
             # 转换尺寸为火山支持的格式 (Seedream 5.0 要求较大像素，至少 3686400 像素)
-            # 官方预设：'2k' (2048x1152 ≈ 2.3M) < 阈值，'3k' (3072x1728 ≈ 5.3M) > 阈值
             volc_size = size.replace("*", "x")
             if "1280x544" in volc_size:
                  volc_size = "3072x1308" # 保持 2.35:1 比例且满足 3.6M+ 像素要求
@@ -911,10 +930,9 @@ class SelfMediaController:
 {article_content[:3000]}
 """
         try:
-            model_id = os.getenv("LLM_MODEL_ID", "deepseek-chat")
             headers = {"Authorization": f"Bearer {api_key}"}
             payload = {
-                "model": model_id,
+                "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": visual_analysis_prompt}],
                 "response_format": {"type": "json_object"}
             }
@@ -930,7 +948,7 @@ class SelfMediaController:
             print(f"⚠️ 视觉分析失败: {e}")
         return None
 
-    def post_to_wechat(self, file_path, method="browser"):
+    def post_to_wechat(self, file_path, method="browser", cover_path=None, title=None):
         """
         利用 baoyu-post-to-wechat 技能将文章发布到公众号草稿箱
         """
@@ -950,22 +968,46 @@ class SelfMediaController:
             print(f"❌ 错误：找不到发布脚本 {script_path}")
             return False
 
+        # 针对 WSL 环境做兼容性处理
+        target_file_path = file_path
+        bun_executable = "bun"
+        
+        if os.name == 'posix':
+            # 检查 bun 是否为 Windows 可执行文件 (常见于 WSL 未安装 bun 但 Windows 已安装且在 PATH 中)
+            try:
+                which_bun = subprocess.check_output(["which", "bun"]).decode().strip()
+                if which_bun.startswith("/mnt/"):
+                    # 如果是 Windows 版 Bun，需要把文件路径转成 Windows 格式
+                    target_file_path = subprocess.check_output(["wslpath", "-w", target_file_path]).decode().strip()
+                    print(f"🔄 检测到 Windows 版 Bun，转换路径为: {target_file_path}")
+            except Exception:
+                pass
+
         # 构造执行命令
-        # 始终指定 theme 为 default 确保视觉一致性
-        cmd = ["bun", script_path]
+        cmd = [bun_executable, script_name]
         if method == "browser":
-            cmd.extend(["--markdown", file_path, "--theme", "default"])
+            cmd.extend(["--markdown", target_file_path, "--theme", "default"])
+            if title:
+                cmd.extend(["--title", title])
+            if cover_path:
+                # 处理 cover_path 的 WSL 兼容性
+                target_cover_path = cover_path
+                if os.name == 'posix':
+                    try:
+                        which_bun = subprocess.check_output(["which", "bun"]).decode().strip()
+                        if which_bun.startswith("/mnt/"):
+                            target_cover_path = subprocess.check_output(["wslpath", "-w", target_cover_path]).decode().strip()
+                            print(f"🔄 封面图路径转换: {target_cover_path}")
+                    except Exception: pass
+                cmd.extend(["--cover", target_cover_path])
         else:
-            cmd.extend([file_path, "--theme", "default"])
+            cmd.extend([target_file_path, "--theme", "default"])
 
         try:
-            # 继承当前环境变量 (确保 .env 中的密钥生效)
+            # 继承当前环境变量
             env = os.environ.copy()
-            # 设置编码防止 Windows 下乱码
             env["PYTHONIOENCODING"] = "utf-8"
             
-            # 使用 subprocess.run 运行，并实时打印输出
-            # 浏览器模式可能需要用户扫码，因此不能完全 quiet
             print(f"执行命令: {' '.join(cmd)}")
             result = subprocess.run(cmd, cwd=scripts_dir, env=env)
             
@@ -974,25 +1016,33 @@ class SelfMediaController:
                 return True
             else:
                 print(f"❌ 公众号发布失败，返回码: {result.returncode}")
+                if method == "browser":
+                    print("💡 提示：云端部署时，请在飞书中查看刚才生成的二维码并扫码登录。")
                 return False
         except Exception as e:
             print(f"❌ 执行发布脚本时发生异常: {e}")
             return False
 
-    def run_publish(self, model_type="wan", method="api"):
+    def run_visuals(self, model_type="seedream"):
         """
-        [全面升级] 视觉工程与分发子系统
-        集成了 baoyu-cover-image 的封面生成与 baoyu-article-illustrator 的插图生成。
-        最后调用 baoyu-post-to-wechat 发布。
+        [视觉工程子系统]
+        仅负责分析文章内容并生成封面和插图，不进行发布。
         """
-        import subprocess
         state = self.load_state()
         draft_file = state.get('draft_file')
         topic_context = state.get('topic_context', {})
         
-        if not draft_file or not os.path.exists(draft_file):
+        if not draft_file:
             print("❌ 错误：未找到审核通过的草稿文件。请先完成重塑阶段。")
-            return
+            return False
+            
+        if not os.path.exists(draft_file):
+            potential_wsl = draft_file.replace("E:\\", "/mnt/e/").replace("\\", "/")
+            if os.path.exists(potential_wsl):
+                draft_file = potential_wsl
+            else:
+                print(f"❌ 错误：找不到草稿文件: {draft_file}")
+                return False
 
         print("\n🎨 启动 [视觉工程子系统 - Baoyu V2.0]...")
         
@@ -1000,20 +1050,15 @@ class SelfMediaController:
             article_content = f.read()
 
         visual_plan = self.analyze_visuals(article_content)
-        
         if not visual_plan:
             print("⚠️ 视觉大脑分析失败，将使用默认快照。")
             visual_plan = {
-                "cover": {
-                    "title": topic_context.get("title", "自媒体爆款"),
-                    "prompt": f"自媒体爆款封面图，关于{topic_context.get('title')}, 高质量插画风格"
-                },
+                "cover": {"title": topic_context.get("title", "自媒体爆款"), "prompt": f"自媒体爆款封面图，关于{topic_context.get('title')}, 高质量插画风格"},
                 "illustrations": []
             }
 
         cover_info = visual_plan.get("cover", {})
-        # 公众号封面固定比例 900:383。Wan2.6 限制起步像素 > 589824，因此使用 1280*544 (约 2.35:1)
-        print(f"🖼️ [封面生成] 方案类型: {cover_info.get('type', 'hero')} | 适配尺寸: 1280*544 (目标比例 900:383)")
+        print(f"🖼️ [封面生成] 方案类型: {cover_info.get('type', 'hero')} | 适配尺寸: 1280*544")
         
         date_slug = datetime.now().strftime('%Y-%m-%d')
         output_dir = os.path.join(self.workspace, 'assets', date_slug)
@@ -1023,34 +1068,26 @@ class SelfMediaController:
             local_img = self.download_image_file(img_url, folder=output_dir)
             if local_img:
                 print(f"✅ 封面图已就位: {local_img}")
-                with open(draft_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                if "![封面图]" not in content:
-                    with open(draft_file, 'w', encoding='utf-8') as f:
-                        # 使用相对路径，去掉 file:/// 前缀以提高兼容性
-                        f.write(f"![封面图]({local_img})\n\n{content}")
+                # 不再插入正文，只保存到状态
+                state['cover_image'] = local_img
+                self.save_state(state)
 
         illustrations = visual_plan.get("illustrations", [])
         if illustrations:
             print(f"📸 正在生成 {len(illustrations)} 张深度插图...")
+            with open(draft_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
             for idx, illus in enumerate(illustrations):
                 aspect = illus.get('aspect', '16:9')
-                size_map = {
-                    "16:9": "1080*608",
-                    "1:1": "800*800",
-                    "3:4": "800*1200",
-                    "long": "1080*1920" # 超长图暂用 9:16 模拟，或保持宽度 1080
-                }
+                size_map = {"16:9": "1080*608", "1:1": "800*800", "3:4": "800*1200", "long": "1080*1920"}
                 target_size = size_map.get(aspect, "1080*608")
                 
                 print(f"   [{idx+1}] 锚点: {illus.get('anchor_text')[:10]}... | 比例: {aspect} ({target_size})")
-                illus_prompt = f"({illus.get('style')} style) {illus.get('prompt')}"
-                
-                illus_url = self.generate_image(illus_prompt, model_type=model_type, size=target_size)
+                illus_url = self.generate_image(f"({illus.get('style')} style) {illus.get('prompt')}", model_type=model_type, size=target_size)
                 if illus_url:
                     local_illus = self.download_image_file(illus_url, folder=output_dir)
                     if local_illus:
-                        # 火山引擎返回通常是 jpeg/webp
                         if model_type == "seedream" and not local_illus.endswith(".jpeg"):
                              new_name = local_illus.rsplit('.', 1)[0] + ".jpeg"
                              if os.path.exists(local_illus): os.rename(local_illus, new_name)
@@ -1058,29 +1095,95 @@ class SelfMediaController:
                         print(f"✅ 插图 {idx+1} 已就位: {local_illus}")
                         anchor = illus.get('anchor_text')
                         if anchor and anchor in content:
-                            # 使用相对路径插入
                             content = content.replace(anchor, f"{anchor}\n\n![插图]({local_illus})\n")
-                            with open(draft_file, 'w', encoding='utf-8') as f:
-                                f.write(content)
                         else:
-                            with open(draft_file, 'a', encoding='utf-8') as f:
-                                f.write(f"\n\n![插图]({local_illus})\n")
+                            content += f"\n\n![插图]({local_illus})\n"
+                        with open(draft_file, 'w', encoding='utf-8') as f:
+                            f.write(content)
+        return True
 
-        print("\n📤 启动 [触达子系统]...")
-        # 调用新集成的发布模块
-        success = self.post_to_wechat(draft_file, method=method)
+    def run_post(self, method="api"):
+        """
+        [发布分发子系统]
+        仅负责将已配图的草稿文件发布到目标平台。
+        """
+        state = self.load_state()
+        draft_file = state.get('draft_file')
+        topic_context = state.get('topic_context', {})
+        
+        if not draft_file:
+            print("❌ 错误：未找到可发布的草稿文件。")
+            return False
+            
+        if not os.path.exists(draft_file):
+            potential_wsl = draft_file.replace("E:\\", "/mnt/e/").replace("\\", "/")
+            if os.path.exists(potential_wsl):
+                draft_file = potential_wsl
+            else:
+                print(f"❌ 错误：找不到待发布文件: {draft_file}")
+                return False
+
+        print("\n📤 启动 [分发子系统]...")
+        
+        # --- 强力净化：基于路径对比彻底剔除引用封面图的行 ---
+        cleaned_file = draft_file
+        cover_path = state.get('cover_image')
+        # --- 强力净化：全局正则清洗，抹除正文开头图片 ---
+        cleaned_file = draft_file
+        cover_path = state.get('cover_image')
+        try:
+            with open(draft_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            import re
+            # 1. 移除特定的标识词
+            content = content.replace("【深度长文（正文）】", "").replace("## 第二部分", "")
+            
+            # 2. 核心斩首逻辑：抹除第一个图片。通常是在 # Title 后面
+            # 匹配格式：# 标题 \n\n ![图片名](路径)
+            content = re.sub(r'(^#\s+.*?\n+)\s*!\[.*?\]\(.*?\)\s*\n*', r'\1\n', content, count=1, flags=re.MULTILINE)
+            
+            # 3. 辅助逻辑：如果文件名对上了，不管在哪都干掉 (防止重复插入)
+            if cover_path:
+                fname = os.path.basename(cover_path)
+                # 匹配包含该文件名的 markdown 图片语法并删除整行
+                content = re.sub(rf'\n*!\[.*?\]\(.*?{re.escape(fname)}.*?\)\n*', '\n', content)
+
+            # 写入临时发布文件
+            cleaned_file = draft_file + ".post.tmp"
+            with open(cleaned_file, 'w', encoding='utf-8') as f:
+                f.write(content.strip() + "\n")
+            print(f"🧹 强力净化：已通过正则抹除开头图片。")
+        except Exception as e:
+            print(f"⚠️ 预处理净化过程中发生异常: {e}")
+
+        # 锁定爆款标题，通过显式参数传给发布脚本 (解决标题变文件名的问题)
+        article_title = topic_context.get('title')
+        success = self.post_to_wechat(cleaned_file, method=method, cover_path=cover_path, title=article_title)
+        
+        # 任务结束后清理临时文件
+        if cleaned_file.endswith(".post.tmp") and os.path.exists(cleaned_file):
+            os.remove(cleaned_file)
         
         if success:
-            print("\n✅ 视觉工程与分发全流程完成！")
+            print("\n✅ 发布任务已提交！")
             state['current_step'] = "done"
-        else:
-            print("\n⚠️ 分发阶段遇到问题，请检查日志。")
-        self.save_state(state)
+            self.save_state(state)
+        return success
+
+    def run_publish(self, model_type="seedream", method="api"):
+        """
+        [全面升级] 视觉工程与分发全流程
+        依次执行配图和发布。
+        """
+        if self.run_visuals(model_type=model_type):
+            return self.run_post(method=method)
+        return False
 
 
 def main():
     parser = argparse.ArgumentParser(description="自媒体工作流调度器")
-    parser.add_argument('action', choices=['setup', 'discovery', 'from-article', 'from-video', 'repurpose', 'publish', 'status', 'sync'], help="要执行的子系统动作")
+    parser.add_argument('action', choices=['setup', 'discovery', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="要执行的子系统动作")
     parser.add_argument('--keyword', type=str, help="discovery阶段的自定义关键词")
     parser.add_argument('--url', type=str, help="from-article 或 from-video 模式的直连URL")
     parser.add_argument('--id', type=str, help="repurpose阶段选中的选题ID或要求")
@@ -1111,8 +1214,12 @@ def main():
             print("请提供 --id <选中选题>")
             sys.exit(1)
         controller.run_repurpose(args.id)
+    elif args.action == 'visuals':
+        controller.run_visuals(model_type=args.model)
+    elif args.action == 'post':
+        controller.run_post(method=args.method)
     elif args.action == 'publish':
-        # 默认优先使用 API 模式以实现全自动流转
+        # 默认一键流转
         controller.run_publish(model_type=args.model, method=args.method)
     elif args.action == 'sync':
         if args.script and args.article:

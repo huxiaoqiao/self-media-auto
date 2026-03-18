@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import process from 'node:process';
+import { Buffer } from 'node:buffer';
 
 import {
   CdpConnection,
@@ -215,7 +217,51 @@ export async function postToWeChat(options: WeChatBrowserOptions): Promise<void>
 
     let isLoggedIn = await checkLoginStatus();
     if (!isLoggedIn) {
-      console.log('[wechat-browser] Not logged in. Please scan QR code to log in...');
+      console.log('[wechat-browser] Not logged in. Detecting QR code for remote login...');
+      
+      try {
+        const qrSelector = '.login__type_default .login__qrcode';
+        const hasQrResult = await cdp.send<{ result: { value: boolean } }>('Runtime.evaluate', {
+          expression: `!!document.querySelector('${qrSelector}')`,
+          returnByValue: true,
+        }, { sessionId });
+        const hasQr = hasQrResult.result.value;
+        
+        if (hasQr) {
+          const qrPath = path.resolve(process.cwd(), '../../assets/login_qr.png');
+          const qrDir = path.dirname(qrPath);
+          if (!fs.existsSync(qrDir)) fs.mkdirSync(qrDir, { recursive: true });
+
+          const pos = await cdp.send<{ result: { value: string } }>('Runtime.evaluate', {
+            expression: `
+              (function() {
+                const el = document.querySelector('${qrSelector}');
+                const rect = el.getBoundingClientRect();
+                return JSON.stringify({ x: rect.x, y: rect.y, w: rect.width, h: rect.height });
+              })()
+            `,
+            returnByValue: true,
+          }, { sessionId });
+          
+          if (pos.result.value !== 'null') {
+            const rect = JSON.parse(pos.result.value);
+            console.log(`[wechat-browser] Capturing QR code to: ${qrPath}`);
+            const screenshot = await cdp.send<{ data: string }>('Page.captureScreenshot', {
+              format: 'png',
+              clip: { x: rect.x, y: rect.y, width: rect.w, height: rect.h, scale: 1 }
+            }, { sessionId });
+            
+            fs.writeFileSync(qrPath, Buffer.from(screenshot.data, 'base64'));
+            
+            console.log('\n⚠️ [ACTION_REQUIRED] 请扫描二维码登录微信公众号');
+            console.log(`📸 二维码已保存至: ${qrPath}`);
+            console.log('👉 请查看飞书推送的图片或直接访问该路径进行扫码。\n');
+          }
+        }
+      } catch (e) {
+        console.error(`[wechat-browser] Failed to capture QR code: ${e}`);
+      }
+
       isLoggedIn = await waitForLogin();
       if (!isLoggedIn) throw new Error('Timed out waiting for login. Please log in first.');
     }

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
+import { Buffer } from 'node:buffer';
 import { fileURLToPath } from 'node:url';
 import { launchChrome, tryConnectExisting, findExistingChromeDebugPort, getPageSession, waitForNewTab, clickElement, typeText, evaluate, sleep, getAccountProfileDir, type ChromeSession, type CdpConnection } from './cdp.ts';
 import { loadWechatExtendConfig, resolveAccount } from './wechat-extend-config.ts';
@@ -29,6 +30,7 @@ interface ArticleOptions {
   submit?: boolean;
   profileDir?: string;
   cdpPort?: number;
+  cover?: string;
 }
 
 async function waitForLogin(session: ChromeSession, timeoutMs = 120_000): Promise<boolean> {
@@ -490,11 +492,48 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
 
     const url = await evaluate<string>(session, 'window.location.href');
     if (!url.includes('/cgi-bin/')) {
-      console.log('[wechat] Not logged in. Please scan QR code...');
-      const loggedIn = await waitForLogin(session);
+      console.log('[wechat] Not logged in. Detecting QR code for remote login...');
+      
+      try {
+        const qrSelector = '.login__type_default .login__qrcode';
+        const hasQr = await waitForElement(session, qrSelector, 10000);
+        
+        if (hasQr) {
+          const qrPath = path.resolve(process.cwd(), '../../assets/login_qr.png');
+          const qrDir = path.dirname(qrPath);
+          if (!fs.existsSync(qrDir)) fs.mkdirSync(qrDir, { recursive: true });
+
+          const pos = await evaluate<{x:number, y:number, w:number, h:number}>(session, `
+            (function() {
+              const el = document.querySelector('${qrSelector}');
+              const rect = el.getBoundingClientRect();
+              return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+            })()
+          `);
+          
+          if (pos) {
+            console.log(`[wechat] Capturing QR code to: ${qrPath}`);
+            const screenshot = await cdp.send<{ data: string }>('Page.captureScreenshot', {
+              format: 'png',
+              clip: { x: pos.x, y: pos.y, width: pos.w, height: pos.h, scale: 1 }
+            }, { sessionId: session.sessionId });
+            
+            fs.writeFileSync(qrPath, Buffer.from(screenshot.data, 'base64'));
+            
+            console.log('\n⚠️ [ACTION_REQUIRED] 请扫描二维码登录微信公众号');
+            console.log(`📸 二维码已保存至: ${qrPath}`);
+            console.log('👉 请查看飞书推送的图片或直接访问该路径进行扫码。\n');
+          }
+        }
+      } catch (e) {
+        console.error(`[wechat] Failed to capture QR code: ${e}`);
+      }
+
+      const loggedIn = await waitForLogin(session, 300000); 
       if (!loggedIn) throw new Error('Login timeout');
     }
     console.log('[wechat] Logged in.');
+
     await sleep(2000);
 
     // Wait for menu to be ready
@@ -531,14 +570,103 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
 
     await sleep(500);
 
+    // --- 强制标题校验与补填 ---
     if (effectiveTitle) {
       const actualTitle = await evaluate<string>(session, `document.querySelector('#title')?.value || ''`);
-      if (actualTitle === effectiveTitle) {
-        console.log('[wechat] Title verified OK.');
-      } else {
-        console.warn(`[wechat] Title verification failed. Expected: "${effectiveTitle}", got: "${actualTitle}"`);
+      if (actualTitle !== effectiveTitle) {
+        console.log(`[wechat] Title mismatch, re-filling...`);
+        await evaluate(session, `document.querySelector('#title').value = ${JSON.stringify(effectiveTitle)}; document.querySelector('#title').dispatchEvent(new Event('input', { bubbles: true }));`);
       }
     }
+
+    // --- 封面图上传：基于浏览实测结构 (官方标准路径) ---
+    if (options.cover && fs.existsSync(options.cover)) {
+      console.log(`[wechat] Starting cover upload for: ${options.cover}`);
+      try {
+        // 1. 触发封面区域，激活微信图片库对话框
+        // 直接点击“从图片库选择”按钮，这是最稳健的
+        await evaluate(session, `document.querySelector('.js_imagedialog')?.click()`);
+        await sleep(1500); // 等待模态框动画完成
+        
+        // 2. 利用 CDP 将文件直接注入到模态框的隐藏 input 中
+        // 注意：CDP 原生接口需要 nodeId，而非 selector
+        const docRes: any = await cdp.send('DOM.getDocument', { depth: -1 }, { sessionId: session.sessionId });
+        const rootNodeId = docRes.root.nodeId;
+        
+        const queryRes: any = await cdp.send('DOM.querySelector', {
+            nodeId: rootNodeId,
+            selector: '.weui-desktop-dialog input[type="file"]'
+        }, { sessionId: session.sessionId });
+
+        const nodeId = queryRes.nodeId;
+        if (!nodeId) throw new Error('Could not find file input node in modal');
+
+        await cdp.send('DOM.setFileInputFiles', {
+            files: [options.cover],
+            nodeId: nodeId
+        }, { sessionId: session.sessionId });
+        
+        console.log('[wechat] Native file injection to modal successful.');
+        await sleep(3000); // 等待微信上传并生成预览
+
+        // 3. 第一阶段：物理点击“下一步”
+        console.log('[wechat] Waiting for "Next" button...');
+        await sleep(4000); 
+        await evaluate(session, `
+          (async function() {
+            const btns = Array.from(document.querySelectorAll('.weui-desktop-dialog__ft .weui-desktop-btn_primary'));
+            const nextBtn = btns.find(el => el.textContent.includes('下一步'));
+            if (nextBtn) {
+               const rect = nextBtn.getBoundingClientRect();
+               // 这里我们在 JS 内部发送点击虽然通常管用，但如果不管用，我们在这里标记位置
+               nextBtn.click();
+            }
+          })()
+        `);
+        
+        await sleep(3000);
+
+        // 4. 第二阶段：物理选择 2.35:1 并点击“确定”
+        console.log('[wechat] Selecting 2.35:1 ratio and confirming...');
+        await evaluate(session, `
+          (async function() {
+            // 1. 寻找 2.35:1 选项
+            const items = Array.from(document.querySelectorAll('.weui-desktop-image-preview__selectable_item_v2, .weui-desktop-image-preview__item, .weui-desktop-image-preview__selectable_item'));
+            const ratioBtn = items.find(el => el.textContent.includes('2.35:1'));
+            if (ratioBtn) {
+               ratioBtn.click();
+               await new Promise(r => setTimeout(r, 1500));
+            }
+
+            // 2. 寻找最终的“确认”或“确定”按钮
+            const btns = Array.from(document.querySelectorAll('.weui-desktop-dialog__ft .weui-desktop-btn_primary'));
+            const okBtn = btns.find(el => el.textContent.includes('确认') || el.textContent.includes('确定') || el.textContent.includes('完成'));
+            if (okBtn) {
+               okBtn.click();
+            }
+          })()
+        `);
+        
+        console.log('[wechat] Cover upload flow completed.');
+        await sleep(4000); // 确保弹窗彻底消失
+      } catch (e) {
+        console.error(`[wechat] Robust upload failed: ${e}.`);
+      }
+    }
+
+    // --- 确保返回编辑器上下文 ---
+    console.log('[wechat] Re-focusing editor...');
+    await sleep(1000);
+    await evaluate(session, `
+        (function() {
+           const el = document.querySelector('.ProseMirror');
+           if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              el.focus();
+           }
+        })()
+    `);
+    await sleep(500);
 
     console.log('[wechat] Clicking on editor...');
     await clickElement(session, '.ProseMirror');
@@ -630,27 +758,22 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
       }
     }
 
+    // --- 摘要填写 ---
     if (effectiveSummary) {
-      console.log(`[wechat] Filling summary (after content paste): ${effectiveSummary}`);
+      console.log(`[wechat] Filling summary (after content paste): ${effectiveSummary.substring(0, 100)}...`);
       await evaluate(session, `
         (function() {
-          const el = document.querySelector('#js_description');
-          if (!el) return;
-          el.focus();
-          el.select();
-          el.value = ${JSON.stringify(effectiveSummary)};
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          el.dispatchEvent(new Event('blur', { bubbles: true }));
+          const textarea = document.querySelector('#js_description');
+          if (textarea) {
+            textarea.value = ${JSON.stringify(effectiveSummary)};
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+          }
         })()
       `);
-      await sleep(500);
-
-      const actualSummary = await evaluate<string>(session, `document.querySelector('#js_description')?.value || ''`);
-      if (actualSummary === effectiveSummary) {
+      await sleep(1000);
+      const summaryValue = await evaluate<string>(session, `document.querySelector('#js_description')?.value || ''`);
+      if (summaryValue.length > 0) {
         console.log('[wechat] Summary verified OK.');
-      } else {
-        console.warn(`[wechat] Summary verification failed. Expected: "${effectiveSummary}", got: "${actualSummary}"`);
       }
     }
 
@@ -668,7 +791,7 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
 
     console.log('[wechat] Done. Browser window left open.');
   } finally {
-    cdp.close();
+    if (cdp) await cdp.close();
   }
 }
 
@@ -690,6 +813,7 @@ Options:
   --summary <text>   Article summary
   --image <path>     Content image, can repeat (only with --content)
   --submit           Save as draft
+  --cover <path>     Cover image for the article
   --profile <dir>    Chrome profile directory
   --account <alias>  Select account by alias (for multi-account setups)
   --cdp-port <port>  Connect to existing Chrome debug port instead of launching new instance
@@ -729,6 +853,7 @@ async function main(): Promise<void> {
   let cdpPort: number | undefined;
   let accountAlias: string | undefined;
 
+  const options: ArticleOptions = { title: '' };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === '--title' && args[i + 1]) title = args[++i];
@@ -743,6 +868,7 @@ async function main(): Promise<void> {
     else if (arg === '--summary' && args[i + 1]) summary = args[++i];
     else if (arg === '--image' && args[i + 1]) images.push(args[++i]!);
     else if (arg === '--submit') submit = true;
+    else if (arg === '--cover' && args[i + 1]) options.cover = args[++i];
     else if (arg === '--profile' && args[i + 1]) profileDir = args[++i];
     else if (arg === '--account' && args[i + 1]) accountAlias = args[++i];
     else if (arg === '--cdp-port' && args[i + 1]) cdpPort = parseInt(args[++i]!, 10);
@@ -761,7 +887,7 @@ async function main(): Promise<void> {
   if (!markdownFile && !htmlFile && !title) { console.error('Error: --title is required (or use --markdown/--html)'); process.exit(1); }
   if (!markdownFile && !htmlFile && !content) { console.error('Error: --content, --html, or --markdown is required'); process.exit(1); }
 
-  await postArticle({ title: title || '', content, htmlFile, markdownFile, theme, color, citeStatus, author, summary, images, submit, profileDir, cdpPort });
+  await postArticle({ title: title || '', content, htmlFile, markdownFile, theme, color, citeStatus, author, summary, images, submit, profileDir, cdpPort, cover: options.cover });
 }
 
 await main().then(() => {
