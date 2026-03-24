@@ -18,6 +18,24 @@ import json
 from datetime import datetime
 from dotenv import load_dotenv
 
+# ============ 日志配置 ============
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+log_file = os.path.join(LOG_DIR, f"workflow_{datetime.now().strftime('%Y-%m-%d')}.log")
+
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)-8s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.FileHandler(log_file, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+# ==================================
+
 # 统一加载环境变量
 load_dotenv()
 
@@ -25,6 +43,7 @@ class SelfMediaController:
     def __init__(self):
         self.workspace = os.getcwd()
         self.session_file = os.path.join(self.workspace, '.workflow_state.json')
+        logger.info(f'[初始化] 工作目录：{self.workspace}')
 
     def load_state(self):
         if os.path.exists(self.session_file):
@@ -729,6 +748,12 @@ class SelfMediaController:
         candidates = state.get('last_candidates', [])
         pending_url = state.get('pending_url', '')
         pending_file = state.get('pending_content_file', '')
+
+        logger.info("="*60)
+        logger.info(f"[repurpose] 开始执行，topic_id_or_cmd={topic_id_or_cmd}")
+        logger.info(f"[repurpose] State loaded: current_step={state.get('current_step')}")
+        logger.info(f"[repurpose] Candidates count: {len(candidates)}")
+        logger.info(f"[repurpose] pending_url: {pending_url[:50] if pending_url else 'None'}...")
         selected = {}
         
         # 剥离按钮前缀，得到干净的 topic_id 或数字索引
@@ -1189,12 +1214,19 @@ class SelfMediaController:
         # 写入短视频脚本到本地 drafts 文件夹
         script_name = f"video_script_{time_slug}.md"
         script_path = os.path.join(drafts_dir, script_name)
-        with open(script_path, "w", encoding='utf-8') as f:
-            f.write(video_script if video_script else "未生成有效脚本")
-            
+        
         # 写入图文长稿到本地 drafts 文件夹 (增加一级标题)
         article_name = f"article_{time_slug}.md"
         article_path = os.path.join(drafts_dir, article_name)
+        
+        logger.info(f"[保存文件] drafts_dir={drafts_dir}")
+        logger.info(f"[保存文件] script_path={script_path}")
+        logger.info(f"[保存文件] article_path={article_path}")
+        logger.info(f"[保存文件] video_script length={len(video_script)}")
+        logger.info(f"[保存文件] article_content length={len(article_content)}")
+
+        with open(script_path, "w", encoding='utf-8') as f:
+            f.write(video_script if video_script else "未生成有效脚本")
         with open(article_path, "w", encoding='utf-8') as f:
             if new_title:
                 f.write(f"# {new_title}\n\n")
