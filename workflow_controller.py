@@ -1359,16 +1359,17 @@ class SelfMediaController:
 - Style: vector-illustration, notion, warm, minimal, blueprint, watercolor, elegant, editorial, scientific, screen-print
 
 ### 输出格式
+**【重要】所有 prompt 字段必须全部使用简体中文中文撰写！封面标题也必须是中文！**
 请务必返回合法的 JSON 格式字符串（不要包含任何 Markdown 代码块，不要包含其它说明文字），结构如下：
 {{
   "cover": {{
-    "title": "封面显示的核心标题",
+    "title": "封面显示的核心标题（必须是中文）",
     "type": "...",
     "palette": "...",
     "rendering": "...",
     "text": "...",
     "mood": "...",
-    "prompt": "基于以上维度和 base-prompt 规范生成的精炼生图提示词"
+    "prompt": "【必须用中文】基于以上维度和 base-prompt 规范生成的精炼生图提示词，必须全部使用简体中文，禁止出现任何英文"
   }},
   "illustrations": [
     {{
@@ -1377,7 +1378,7 @@ class SelfMediaController:
       "style": "...",
       "aspect": "16:9 | 1:1 | 3:4 | long",
       "purpose": "为什么要这张图",
-      "prompt": "遵循 ZONES / LABELS / COLORS / STYLE 结构的生图提示词，必须包含文章中的具体数据或核心术语"
+      "prompt": "【必须用中文】遵循 ZONES / LABELS / COLORS / STYLE 结构的生图提示词，必须包含文章中的具体数据或核心术语，必须全部使用简体中文，禁止出现任何英文"
     }}
   ]
 }}
