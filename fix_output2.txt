@@ -1,5 +1,0 @@
-Done. Checking...
-Still has error at line 478: invalid character '＄' (U+FF04)
-  477: '        """[FIXED CONTENT]'
-  478: '澶勭悊鍗＄墖鎸夐挳鍔ㄤ綔"""'
-  479: ''
