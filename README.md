@@ -39,10 +39,8 @@
 
 ### 1. 准备环境
 ```bash
-# Windows 用户运行
+# 运行初始化脚本
 .\setup.ps1
-# Mac 或 Linux 用户运行
-bash setup.sh
 ```
 
 ### 2. 设置你的密钥

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 新媒体超级工厂 - 中央调度器 (Agentic Controller)
 本脚本负责串联 xiaohongshu-cli，baoyu-skills 和 huashu-skills，
@@ -30,6 +31,35 @@ class SelfMediaController:
             with open(self.session_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         return {"current_step": "idle", "selected_topic": None, "draft_file": None}
+
+    def reset_state(self):
+        """重置状态文件到初始状态（每次重新进入选题时调用）"""
+        import shutil
+        if os.path.exists(self.session_file):
+            # 备份旧状态
+            backup = self.session_file + ".bak"
+            shutil.copy2(self.session_file, backup)
+        default_state = {
+            "industry": "ai",
+            "current_step": "idle",
+            "selected_topic": None,
+            "draft_file": None,
+            "video_script": None,
+            "cover_image": None,
+            "last_candidates": [],
+            "candidates_page_index": 0,
+            "candidates_page_size": 5,
+            "candidates_total": 0,
+            "script_approved": False,
+            "article_approved": False,
+            "is_generating_cover": False,
+            "pending_url": None,
+            "pending_content_file": None,
+            "pending_type": None,
+            "topic_context": None
+        }
+        self.save_state(default_state)
+        print("✅ 状态已重置")
 
     def save_state(self, state):
         with open(self.session_file, 'w', encoding='utf-8') as f:
@@ -126,45 +156,280 @@ class SelfMediaController:
 
     def run_from_article(self, url_or_text):
         """
-        [v1.1] 快捷入口：从指定文章链接开始创作
+        [v2.0] 快捷入口：从指定文章链接开始创作
+        流程：抓取内容 → AI摘要 → 发送预览卡 → 用户确认 → 开始改写
         """
         import re
+        # 清理上次pending状态，避免新URL被旧数据干扰
+        state = self.load_state()
+        state.pop('pending_url', None)
+        state.pop('pending_content_file', None)
+        state.pop('pending_type', None)
+        state.pop('topic_context', None)
+        state.pop('draft_file', None)
+        state.pop('video_script', None)
+        state['current_step'] = 'idle'
+        self.save_state(state)
+        
         match = re.search(r'https?://[^\s]+', url_or_text)
         url = match.group(0) if match else url_or_text
         
         print(f"🚀 启动定向创作模式 (From Article)... 原始输入中探测到的 URL: {url}")
+        
+        # Step 1: 提取内容
+        raw_content = self._extract_article_content(url)
+        if not raw_content:
+            print("❌ 内容提取失败，无法继续")
+            return {"error": "内容提取失败"}
+        
+        # Step 2: 解析标题和作者
+        title = self._extract_title(raw_content) or "未识别到标题"
+        author = self._extract_author(raw_content) or "未知作者"
+        
+        # Step 3: 生成AI摘要
+        print("🤖 正在生成内容摘要...")
+        summary = self._generate_summary(raw_content, title)
+        print(f"   摘要生成成功: {len(summary)}字")
+        
+        print(f"✅ 内容抓取成功")
+        print(f"   标题: {title}")
+        print(f"   作者: {author}")
+        print(f"   摘要字数: {len(summary)}")
+        
+        # Step 4: 保存内容到临时文件
+        import os
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_file = os.path.join(temp_dir, f'preview_{date_str}_{int(datetime.now().timestamp())}.txt')
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            f.write(f"TITLE:{title}\nAUTHOR:{author}\nSOURCE:公众号\nURL:{url}\n\n{raw_content}")
+        print(f"   临时文件: {temp_file}")
+        
+        # Step 5: 发送预览卡
+        self._send_url_preview_card(title, author, "微信公众号", summary, url, "article", f"原文长度: {len(raw_content)}字")
+        
+        # Step 6: 更新状态
         state = self.load_state()
+        state['current_step'] = 'waiting_for_rewrite_confirm'
+        state['pending_url'] = url
+        state['pending_content_file'] = temp_file
+        state['pending_type'] = 'article'
         selected = {
             "id": url, 
             "source": "公众号", 
-            "title": "定向通过URL输入的素材", 
-            "author": "外部链接",
+            "title": title, 
+            "author": author,
             "score": 9999
         }
         state['last_candidates'] = [selected]
         self.save_state(state)
-        self.run_repurpose(url)
+        
+        print("📤 预览卡已发送，等待用户确认...")
+        return {"status": "preview_sent", "title": title, "file": temp_file}
 
     def run_from_video(self, url_or_text):
         """
-        [v1.1] 快捷入口：从指定视频链接开始创作
+        [v2.0] 快捷入口：从指定视频链接开始创作
+        流程：提取文案 → 发送预览卡 → 用户确认 → 开始改写
         """
         import re
+        # 清理上次pending状态，避免新URL被旧数据干扰
+        state = self.load_state()
+        state.pop('pending_url', None)
+        state.pop('pending_content_file', None)
+        state.pop('pending_type', None)
+        state.pop('topic_context', None)
+        state.pop('draft_file', None)
+        state.pop('video_script', None)
+        state['current_step'] = 'idle'
+        self.save_state(state)
+        
         match = re.search(r'https?://[^\s]+', url_or_text)
         url = match.group(0) if match else url_or_text
         
         print(f"🚀 启动定向视频创作模式 (From Video)... 原始输入中探测到的 URL: {url}")
+        
+        # Step 1: 提取视频文案
+        raw_content = self._extract_video_content(url)
+        if not raw_content:
+            print("❌ 视频内容提取失败，无法继续")
+            return {"error": "视频内容提取失败"}
+        
+        # Step 2: 解析信息
+        title = self._extract_title(raw_content) or f"视频内容_{datetime.now().strftime('%H%M%S')}"
+        author = "视频平台"
+        
+        # Step 3: 生成AI摘要
+        print("🤖 正在生成内容摘要...")
+        summary = self._generate_summary(raw_content, title)
+        print(f"   摘要生成成功: {len(summary)}字")
+        
+        print(f"✅ 视频文案提取成功")
+        print(f"   标题: {title}")
+        print(f"   摘要字数: {len(summary)}")
+        
+        # Step 4: 保存内容到临时文件
+        import os
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_file = os.path.join(temp_dir, f'preview_{date_str}_{int(datetime.now().timestamp())}.txt')
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            f.write(f"TITLE:{title}\nAUTHOR:{author}\nSOURCE:视频\nURL:{url}\n\n{raw_content}")
+        print(f"   临时文件: {temp_file}")
+        
+        # Step 5: 发送预览卡
+        self._send_url_preview_card(title, author, "短视频平台", summary, url, "video", f"文案长度: {len(raw_content)}字")
+        
+        # Step 5: 更新状态
         state = self.load_state()
+        state['current_step'] = 'waiting_for_rewrite_confirm'
+        state['pending_url'] = url
+        state['pending_content_file'] = temp_file
+        state['pending_type'] = 'video'
         selected = {
             "id": url, 
             "source": "视频链接", 
-            "title": "定向输入的视频素材", 
-            "author": "视频平台",
+            "title": title, 
+            "author": author,
             "score": 9999
         }
         state['last_candidates'] = [selected]
         self.save_state(state)
-        self.run_repurpose(url)
+        
+        print("📤 预览卡已发送，等待用户确认...")
+        return {"status": "preview_sent", "title": title, "file": temp_file}
+
+    def _extract_article_content(self, url):
+        """提取公众号/网页文章内容"""
+        import os
+        import sys
+        
+        try:
+            from scrapling.fetchers import Fetcher
+            print("⚙️ 正在调用 url-reader 提取内容...")
+            url_reader_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'url-reader-0.1.1', 'scripts')
+            if url_reader_path not in sys.path:
+                sys.path.insert(0, url_reader_path)
+            
+            from url_reader import read_url
+            result = read_url(url, verbose=False)
+            
+            if isinstance(result, dict) and result.get("success"):
+                return str(result.get("content", ""))
+        except Exception as e:
+            print(f"⚠️ url-reader 提取失败: {e}")
+        
+        return None
+
+    def _extract_video_content(self, url):
+        """提取视频文案（ASR）"""
+        import os
+        import subprocess
+        import re
+        
+        if "douyin.com" in url:
+            print(f"📥 正在挂载抖音下载引擎提取文案...")
+            douyin_js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "douyin-download-1.2.0", "douyin.js")
+            output_dir = os.path.join(os.getcwd(), 'cache', 'douyin_extract')
+            os.makedirs(output_dir, exist_ok=True)
+            
+            if not os.getenv("SILI_FLOW_API_KEY"):
+                print("⚠️ 未设置 SILI_FLOW_API_KEY，无法提取语音")
+                return None
+            
+            cmd = ["node", douyin_js_path, "extract", url, "-o", output_dir, "--no-segment"]
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+                if res.returncode == 0:
+                    match = re.search(r"保存位置:\s*(.+?\.md)", res.stdout)
+                    if match:
+                        md_path = match.group(1).strip()
+                        if os.path.exists(md_path):
+                            with open(md_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            parts = content.split("## 文案内容")
+                            if len(parts) > 1:
+                                return parts[-1].strip()
+            except Exception as e:
+                print(f"⚠️ douyin.js 解析失败: {e}")
+        
+        return None
+
+    def _extract_title(self, content):
+        """从内容中提取标题"""
+        import re
+        lines = content.strip().split('\n')
+        for line in lines[:5]:
+            line = line.strip()
+            if len(line) > 5 and len(line) < 100:
+                # 去掉常见前缀
+                line = re.sub(r'^(#{1,6}\s+|【[^】]+】|\[[^\]]+\]|#+\s*)', '', line)
+                if line:
+                    return line
+        return None
+
+    def _extract_author(self, content):
+        """从内容中提取作者"""
+        import re
+        match = re.search(r'作者[：:]\s*([^\n]{2,20})', content)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r'出自[：:]\s*([^\n]{2,20})', content)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _generate_summary(self, content, title):
+        """使用AI生成文章摘要"""
+        import os
+        import json
+        import openai
+        
+        # 取前3000字进行摘要（足够生成准确摘要）
+        truncated = content[:3000] if len(content) > 3000 else content
+        
+        prompt = f"""请为以下文章生成一个简洁的中文摘要，100字以内，直接输出摘要内容，不需要其他说明。
+
+文章标题：{title}
+
+文章内容：
+{truncated}
+
+摘要："""
+        
+        try:
+            client = openai.OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                base_url=os.getenv("OPENAI_BASE_URL")
+            )
+            model = os.getenv("LLM_MODEL_ID", "deepseek-chat")
+            
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.3
+            )
+            summary = response.choices[0].message.content.strip()
+            return summary
+        except Exception as e:
+            print(f"⚠️ AI摘要生成失败: {e}")
+            # 降级方案：返回前200字
+            return truncated[:200] + "..."
+
+    def _send_url_preview_card(self, title, author, source, summary, url, content_type, extra_info):
+        """发送内容预览卡"""
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from send_feishu_card import send_url_preview_card
+        
+        success = send_url_preview_card(title, author, source, summary, url, content_type, extra_info)
+        if success:
+            print("✅ 预览卡发送成功")
+        else:
+            print("⚠️ 预览卡发送失败")
 
     def sync_to_feishu(self, script_path, article_path):
         """
@@ -206,12 +471,15 @@ class SelfMediaController:
         
         return result
 
-    def run_discovery(self, keyword=None):
+    def run_discovery(self, keyword=None, refresh=False):
         """
         [卡点 1 之前] 嗅探系统 (次幂数据版)
         抓取微信爆款文章的热点。
         """
         import requests
+        
+        # 每次进入选题前自动重置状态，避免上次的pending数据干扰
+        self.reset_state()
         
         state = self.load_state()
         saved_industry = state.get('industry')
@@ -304,36 +572,60 @@ class SelfMediaController:
             print(f"❌ 请求 Token 接口时发生异常: {e}")
             sys.exit(1)
 
-        print("📥 [2/2] 正在拉取爆款文章列表...")
-        candidates = []
-        try:
-            articles_resp = requests.post(
-                f"{api_base}/api/v2/hot/articles?access_token={access_token}",
-                json={"category": cimi_category_en, "read_num": 1000},
-                headers=headers,
-                timeout=15
-            )
-            articles_resp.raise_for_status()
-            articles_data = articles_resp.json()
-            
-            if articles_data.get("code") != 200:
-                print(f"❌ 获取文章失败: {articles_data.get('msg')}")
-                sys.exit(1)
+        # 检查是否有缓存且未过期（1小时内），且不是强制刷新
+        state = self.load_state()
+        cached_candidates = state.get('last_candidates', [])
+        cached_time = state.get('candidates_fetched_at', '')
+        cached_total = state.get('candidates_total', 0)
+        
+        if cached_candidates and not refresh and cached_total >= 5:
+            from datetime import datetime as dt
+            if cached_time:
+                try:
+                    cached_dt = dt.fromisoformat(cached_time)
+                    age_hours = (dt.now() - cached_dt).total_seconds() / 3600
+                    if age_hours < 1:  # 1小时内不重新请求
+                        candidates = cached_candidates
+                        print(f"📦 检测到缓存（共 {len(candidates)} 条），直接返回（强制刷新请加 --refresh）")
+                    else:
+                        candidates = []
+                except:
+                    candidates = []
+            else:
+                candidates = []
+        else:
+            candidates = []
+        
+        if not candidates:
+            print("📥 [2/2] 正在拉取爆款文章列表...")
+            try:
+                articles_resp = requests.post(
+                    f"{api_base}/api/v2/hot/articles?access_token={access_token}",
+                    json={"category": cimi_category_en, "read_num": 1000},
+                    headers=headers,
+                    timeout=15
+                )
+                articles_resp.raise_for_status()
+                articles_data = articles_resp.json()
                 
-            items = articles_data.get("data", {}).get("items", [])
-            for item in items[:15]:
-                candidates.append({
-                    "id": item.get("content_url"),
-                    "source": "微信公众号(次幂)",
-                    "title": item.get("title", ""),
-                    "likes": int(item.get("like_num", 0)),
-                    "comments": int(item.get("read_num", 0)),
-                    "author": item.get("nickname", "未知公众号"),
-                    "score": int(item.get("hotness", 0))
-                })
-        except Exception as e:
-            print(f"❌ 请求获取文章接口时发生异常: {e}")
-            sys.exit(1)
+                if articles_data.get("code") != 200:
+                    print(f"❌ 获取文章失败: {articles_data.get('msg')}")
+                    sys.exit(1)
+                    
+                items = articles_data.get("data", {}).get("items", [])
+                for item in items[:15]:
+                    candidates.append({
+                        "id": item.get("content_url"),
+                        "source": "微信公众号(次幂)",
+                        "title": item.get("title", ""),
+                        "likes": int(item.get("like_num", 0)),
+                        "comments": int(item.get("read_num", 0)),
+                        "author": item.get("nickname", "未知公众号"),
+                        "score": int(item.get("hotness", 0))
+                    })
+            except Exception as e:
+                print(f"❌ 请求获取文章接口时发生异常: {e}")
+                sys.exit(1)
 
         print(f"\n=== ✨ 今日推荐 Top {len(candidates)} 爆款选题 === (数据来源: 次幂)")
         if not candidates:
@@ -341,7 +633,7 @@ class SelfMediaController:
         else:
             for idx, c in enumerate(candidates, 1):
                 print(f"{idx}. [{c['source']}] [{c['title']}]({c['id']})")
-                print(f"   👤 {c['author']} | 👁️ 阅读: {c['comments']} | 👍 赞: {c['likes']} | 🔥 热度: {c['score']}")
+                print(f"   👤 {c['author']} | 👁️ 阅读: {c.get('comments', 'N/A')} | 👍 赞: {c.get('likes', 'N/A')} | 🔥 热度: {c.get('score', 'N/A')}")
         print(f"{len(candidates) + 1}. [自定义] 退回重搜或告诉我一个新方向")
         print("===================================")
         print("👉 请用户回复：包含 --id 对应你想二创的内容序号，或重新执行 discovery --keyword")
@@ -349,6 +641,61 @@ class SelfMediaController:
         state = self.load_state()
         state['current_step'] = "waiting_for_topic_selection"
         state['last_candidates'] = candidates
+        state['candidates_page_index'] = 0
+        state['candidates_page_size'] = 5
+        state['candidates_total'] = len(candidates)
+        state['candidates_fetched_at'] = __import__('datetime').datetime.now().isoformat()
+        # 清除旧的 pending 缓存，避免干扰新的选题解读
+        state.pop('pending_url', None)
+        state.pop('pending_content_file', None)
+        state.pop('pending_type', None)
+        state.pop('topic_context', None)
+        self.save_state(state)
+
+    def run_next_topics(self):
+        """获取下一批选题（分页）"""
+        state = self.load_state()
+        candidates = state.get('last_candidates', [])
+        page_index = state.get('candidates_page_index', 0)
+        page_size = state.get('candidates_page_size', 5)
+        total = len(candidates)
+        
+        if not candidates:
+            print("❌ 没有缓存的选题，请先执行 discovery")
+            return
+        
+        # 计算当前页的起始和结束位置
+        start = page_index * page_size
+        end = start + page_size
+        
+        if start >= total:
+            # 当前页已遍历完，重新获取（模拟换一批）
+            print("📋 当前批次已遍历完，将重新加载...")
+            state['candidates_page_index'] = 0
+            self.save_state(state)
+            # 递归调用 discovery 刷新
+            self.run_discovery(refresh=True)
+            return
+        
+        # 返回当前页的选题
+        page_candidates = candidates[start:end]
+        new_index = page_index + 1
+        state['candidates_page_index'] = new_index
+        self.save_state(state)
+        
+        print(f"\n=== 📖 第 {page_index+1} 批选题 (共 {total} 条) ===")
+        for idx, c in enumerate(page_candidates, start + 1):
+            print(f"{idx}. [{c['source']}] [{c['title']}]({c['id']})")
+            print(f"   👤 {c['author']} | 👁️ 阅读: {c['comments']} | 👍 赞: {c['likes']} | 🔥 热度: {c['score']}")
+        
+        remaining = total - end
+        if remaining > 0:
+            print(f"\n📦 剩余 {remaining} 条选题待推送...")
+        else:
+            print(f"\n✅ 已遍历全部选题，下次将重新请求API")
+        
+        state['last_candidates'] = candidates
+        state['current_step'] = "waiting_for_topic_selection"
         self.save_state(state)
 
     def run_repurpose(self, topic_id_or_cmd):
@@ -364,22 +711,79 @@ class SelfMediaController:
         state = self.load_state()
         topic_id_or_cmd = str(topic_id_or_cmd).strip('"').strip("'")
         candidates = state.get('last_candidates', [])
+        pending_url = state.get('pending_url', '')
+        pending_file = state.get('pending_content_file', '')
         selected = {}
         
+        # 剥离按钮前缀，得到干净的 topic_id 或数字索引
+        # 支持: rewrite_topic_005, insight_topic_005, skip_topic_005, next_topic_005, topic_005, 5
+        clean_cmd = topic_id_or_cmd
+        prefixes_to_strip = ['rewrite_', 'insight_', 'skip_', 'next_', 'approve_', 'modify_', 'post_', 'copy_', 'edit_', 'cancel_']
+        for prefix in prefixes_to_strip:
+            if clean_cmd.startswith(prefix):
+                clean_cmd = clean_cmd[len(prefix):]
+                break
+        
+        # 如果是 topic_XXX 格式，提取数字索引（如 topic_005 -> 5）
+        index_match = re.match(r'^topic_(\d+)$', clean_cmd)
+        if index_match:
+            clean_cmd = index_match.group(1)
+        
         if isinstance(candidates, list):
-            # Try numeric index first
-            if topic_id_or_cmd.isdigit():
-                idx = int(topic_id_or_cmd) - 1
+            # Try numeric index first (使用剥离后的 clean_cmd)
+            if clean_cmd.isdigit():
+                idx = int(clean_cmd) - 1
                 if 0 <= idx < len(candidates):
                     selected = candidates[idx]
             
-            # If not found by index, try matching ID
+            # If not found by index, try matching ID (优先匹配 URL)
             if not selected:
                 for c in candidates:
-                    if isinstance(c, dict) and str(c.get("id")) == topic_id_or_cmd:
-                        selected = c
-                        break
-                
+                    if isinstance(c, dict):
+                        candidate_id = str(c.get("id", ""))
+                        # 直接匹配 ID 或 URL
+                        if candidate_id == clean_cmd or candidate_id == topic_id_or_cmd:
+                            selected = c
+                            break
+                        # 也尝试用剥离后的 clean_cmd 匹配 ID
+                        if candidate_id == clean_cmd:
+                            selected = c
+                            break
+        
+        # 如果没有匹配到任何候选，且有 pending_content_file（来自 URL 预览流程），检查是否真正匹配
+        # 只有当 topic_id_or_cmd 与 pending_url 匹配时才使用缓存
+        if (not selected or selected.get('source') == '自定义') and pending_file and os.path.exists(pending_file):
+            # Topic 卡片点击绝对不应该使用 pending_url！
+            # pending_url 只应该用于 "用户直接发链接" 的场景
+            # 通过检测 topic_id_or_cmd 是否包含 "topic_" 前缀或纯数字来判断是否为 topic 卡片
+            is_topic_card_click = 'topic_' in topic_id_or_cmd or (
+                topic_id_or_cmd.lstrip('rewrite_insight_skip_next_').isdigit()
+            )
+            
+            if is_topic_card_click:
+                # Topic 卡片点击：不使用 pending_content_file，走正常的候选匹配（上面已失败）
+                print(f"⚠️ Topic 卡片点击 '{topic_id_or_cmd}' 未在候选中找到匹配，将作为自定义话题处理")
+                selected = {"id": clean_cmd if clean_cmd else topic_id_or_cmd, "source": "自定义", "title": clean_cmd if clean_cmd else topic_id_or_cmd, "author": "User"}
+            else:
+                # URL 预览/直接发链接场景：可以使用 pending_url
+                # 检查是否真的匹配 pending_url（而不是旧的残留数据）
+                clean_for_compare = clean_cmd if clean_cmd else topic_id_or_cmd
+                pending_match = pending_url and (clean_for_compare in pending_url or pending_url in clean_for_compare or clean_for_compare == pending_url)
+                if pending_match:
+                    print(f"📄 检测到匹配的 pending 内容文件: {pending_file}，将基于缓存内容继续改写流程")
+                    # 构造 fake candidate 用于后续流程
+                    cached_title = pending_url.split("?__biz=")[0] if pending_url else topic_id_or_cmd
+                    selected = {
+                        "id": pending_url if pending_url else topic_id_or_cmd,
+                        "source": "公众号",
+                        "title": cached_title,
+                        "author": "未知作者"
+                    }
+                else:
+                    print(f"⚠️ pending 内容与请求的选题不匹配，将作为自定义话题处理")
+                    # 不使用 pending_content_file，而是作为自定义话题（会重新下载）
+                    selected = {"id": clean_cmd if clean_cmd else topic_id_or_cmd, "source": "自定义", "title": clean_cmd if clean_cmd else topic_id_or_cmd, "author": "User"}
+        
         if not selected or not isinstance(selected, dict):
             print(f"⚠️ 未在缓存的候选列表中找到ID '{topic_id_or_cmd}'，将作为自定义话题处理。")
             selected = {"id": topic_id_or_cmd, "source": "自定义", "title": topic_id_or_cmd, "author": "User"}
@@ -389,10 +793,45 @@ class SelfMediaController:
         print(f"🧠 启动 [内容重塑引擎] 处理选题: [{source_val}] {title_val}")
         
         raw_content = ""
+        
         # ==========================
-        # 1. 自动提取原素材全文/视频文案
+        # 0. 检查是否有缓存的内容文件（来自 URL 预览流程）
         # ==========================
-        print("⏳ 正在解析并下载源素材内容...")
+        pending_url = state.get('pending_url', '')
+        pending_file = state.get('pending_content_file', '')
+        pending_type = state.get('pending_type', '')
+        
+        if pending_file and os.path.exists(pending_file) and str(selected.get('id', '')) == pending_url:
+            print(f"📄 发现缓存的内容文件: {pending_file}")
+            try:
+                with open(pending_file, 'r', encoding='utf-8') as f:
+                    cached = f.read()
+                # 解析缓存文件格式: TITLE:xxx\nAUTHOR:xxx\nSOURCE:xxx\nURL:xxx\n\ncontent
+                if 'TITLE:' in cached:
+                    lines = cached.split('\n')
+                    for line in lines[:6]:
+                        if line.startswith('TITLE:'):
+                            cached_title = line[6:].strip()
+                            if cached_title and not title_val:
+                                title_val = cached_title
+                                print(f"   标题（来自缓存）: {title_val}")
+                # 提取正文（跳过元信息头）
+                parts = cached.split('\n\n', 1)
+                if len(parts) > 1:
+                    raw_content = parts[1].strip()
+                else:
+                    raw_content = cached
+                print(f"✅ 已加载缓存内容: {len(raw_content)} 字")
+            except Exception as e:
+                print(f"⚠️ 读取缓存文件失败: {e}，将重新下载")
+                raw_content = ""
+        
+        # 如果没有缓存内容，继续正常的下载流程
+        if not raw_content:
+            # ==========================
+            # 1. 自动提取原素材全文/视频文案
+            # ==========================
+            print("⏳ 正在解析并下载源素材内容...")
         def download_video_and_extract_audio(url: str, platform: str) -> str:
             import os
             import subprocess
@@ -535,7 +974,7 @@ class SelfMediaController:
                     
                     print(f"📥 正在解析原文章正文: {fallback_url[:50]}...")
                     detail_resp = requests.post(
-                        f"{api_base}/api/v3/articles/detail?access_token={access_token}",
+                        f"{api_base}/api/v2/articles/detail?access_token={access_token}",
                         json={"url": fallback_url},
                         headers={"Content-Type": "application/json"},
                         timeout=20
@@ -689,24 +1128,47 @@ class SelfMediaController:
         article_content = ""
         new_title = ""
         
-        if "## 第二部分" in final_content:
-            parts = final_content.split("## 第二部分")
-            video_script = parts[0].replace("## 第一部分：", "").replace("## 第一部分", "").strip()
-            article_content = parts[1].replace("：", "", 1).strip()
-            
-            # 彻底清理正文开头的标识词
-            article_content = article_content.replace("【深度长文（正文）】", "").replace("## 第二部分", "").strip()
-            
-            # 使用正则提取 [文章标题] 后面的内容
-            import re
-            title_match = re.search(r"\[文章标题\]\s*(.*)", article_content)
-            if title_match:
-                new_title = title_match.group(1).strip()
-                # 去掉内容中的 [文章标题] 标记行
-                article_content = re.sub(r"\[文章标题\].*", "", article_content, count=1).strip()
-                print(f"🔥 捕获到全新爆款标题: {new_title}")
+        # 彻底清理正文开头的标识词 (增强版)
+        import re
+        
+        # 针对模型输出的两种常见格式进行正则拆分
+        # 模式 1: ## 第一部分... ## 第二部分...
+        # 模式 2: ## 视频脚本... --- [文章标题]...
+        
+        video_script = ""
+        article_content = final_content
+        new_title = ""
+
+        # 尝试寻找脚本部分 (第一部分)
+        # 匹配 ## 第一部分 或 ## 视频脚本 开头，直到遇到 --- 或 ## 第二部分 或 [文章标题]
+        script_pattern = re.compile(r"##\s*(?:第一部分|视频脚本|爆款短视频脚本)[：:\s]*(.*?)(\n\s*---|\n\s*##\s*第二部分|\n\s*\[文章标题\])", re.DOTALL | re.IGNORECASE)
+        script_match = script_pattern.search(final_content)
+        
+        if script_match:
+            video_script = script_match.group(1).strip()
+            # 剩余部分作为正文处理的起点
+            article_content = final_content[script_match.end(1):].strip()
         else:
-            article_content = final_content
+            # 兜底方案：如果没找到明确的第一部分标记，但有分割线或第二部分标记
+            parts = re.split(r"\n\s*---\s*\n|\n\s*##\s*第二部分|\n\s*\[文章标题\]", final_content, maxsplit=1)
+            if len(parts) > 1:
+                video_script = parts[0].replace("## 第一部分", "").replace("## 视频脚本", "").replace("：", "").replace(":", "").strip()
+                article_content = parts[1]
+            else:
+                article_content = final_content
+
+        # 尝试从全文或正文中提取标题
+        title_pattern = re.compile(r"\[文章标题\]\s*(.*)", re.IGNORECASE)
+        title_match = title_pattern.search(final_content)
+        if title_match:
+            new_title = title_match.group(1).strip()
+            # 从正文中剔除标题行
+            article_content = title_pattern.sub("", article_content).strip()
+            print(f"🔥 捕获到全新爆款标题: {new_title}")
+
+        # 最终清理文章正文中的冗余标记
+        article_content = re.sub(r"##\s*第二部分.*?\n", "", article_content, flags=re.IGNORECASE)
+        article_content = article_content.replace("【深度长文（正文）】", "").replace("---", "").strip()
 
         # 写入短视频脚本到本地 drafts 文件夹
         script_name = f"video_script_{time_slug}.md"
@@ -1009,7 +1471,35 @@ class SelfMediaController:
             env["PYTHONIOENCODING"] = "utf-8"
             
             print(f"执行命令: {' '.join(cmd)}")
-            result = subprocess.run(cmd, cwd=scripts_dir, env=env)
+            result = subprocess.run(cmd, cwd=scripts_dir, env=env, capture_output=True, text=True, encoding='utf-8')
+            
+            # 打印输出以便调试
+            if result.stdout:
+                print(result.stdout)
+            if result.stderr:
+                print(result.stderr, file=sys.stderr)
+            
+            # 检测登录二维码并尝试通过飞书发送
+            feishu_marker = "[FEISHU_IMAGE_REQUIRED]"
+            if method == "browser" and feishu_marker in result.stdout:
+                import re
+                match = re.search(feishu_marker + r'\s+(.+)', result.stdout)
+                if match:
+                    img_path = match.group(1).strip()
+                    print(f"\n🔔 检测到登录二维码，尝试通过飞书发送...")
+                    try:
+                        send_result = subprocess.run(
+                            ["openclaw", "feishu", "send", "--image", img_path],
+                            capture_output=True, text=True, timeout=30
+                        )
+                        if send_result.returncode == 0:
+                            print("✅ 二维码已通过飞书发送给您，请扫码登录")
+                        else:
+                            print(f"⚠️ 飞书发送失败，请手动查看: {img_path}")
+                    except FileNotFoundError:
+                        print(f"⚠️ openclaw 命令不可用，请手动查看二维码: {img_path}")
+                    except subprocess.TimeoutExpired:
+                        print(f"⚠️ 飞书发送超时，请手动查看: {img_path}")
             
             if result.returncode == 0:
                 print("✅ 公众号草稿上传成功！")
@@ -1183,8 +1673,9 @@ class SelfMediaController:
 
 def main():
     parser = argparse.ArgumentParser(description="自媒体工作流调度器")
-    parser.add_argument('action', choices=['setup', 'discovery', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="要执行的子系统动作")
+    parser.add_argument('action', choices=['setup', 'discovery', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync', 'next'], help="要执行的子系统动作")
     parser.add_argument('--keyword', type=str, help="discovery阶段的自定义关键词")
+    parser.add_argument('--refresh', action='store_true', help="强制刷新选题（重新请求API）")
     parser.add_argument('--url', type=str, help="from-article 或 from-video 模式的直连URL")
     parser.add_argument('--id', type=str, help="repurpose阶段选中的选题ID或要求")
     parser.add_argument('--model', type=str, choices=['z', 'qwen', 'wan', 'seedream'], default='seedream', help="publish阶段使用的生图模型 (z: Z-Image, qwen: Qwen-Image, wan: Wan-Image, seedream: Volcengine Seedream)")
@@ -1198,7 +1689,9 @@ def main():
     if args.action == 'setup':
         controller.run_setup()
     elif args.action == 'discovery':
-        controller.run_discovery(args.keyword)
+        controller.run_discovery(args.keyword, refresh=args.refresh)
+    elif args.action == 'next':
+        controller.run_next_topics()
     elif args.action == 'from-article':
         if not args.url:
             print("❌ 错误: from-article 模式需要提供 --url 参数")
