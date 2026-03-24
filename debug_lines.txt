@@ -1,0 +1,20 @@
+Total lines: 1201
+Line 206: 
+
+Line 207:     def send_image_preview(self, token, image_path, caption=""):
+
+Line 208:         """鍙戦€佸浘鐗囬瑙堬紙绾浘鐗囨秷鎭紝涓嶉渶瑕佸崱鐗囷級"""
+
+Line 209:         print(f"[DEBUG] send_image_preview called: path={repr(image_path)}, caption={repr(caption)}"
+Line 210:         if not image_path or not os.path.exists(image_path):
+
+Line 211:             print(f"[WARN] Image not found: {image_path}")
+
+Line 212:             return
+
+Line 213:         try:
+
+Line 214:             # 鑾峰彇 token
+
+Line 215:             token_data = json.loads(subprocess.run([
+

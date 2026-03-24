@@ -825,8 +825,15 @@ class SelfMediaController:
                     # 不使用 pending_content_file，而是作为自定义话题（会重新下载）
                     selected = {"id": clean_cmd if clean_cmd else topic_id_or_cmd, "source": "自定义", "title": clean_cmd if clean_cmd else topic_id_or_cmd, "author": "User"}
         
+        # 如果还没找到匹配，尝试使用 state 里记录的当前话题 ID (保底方案)
+        if not selected or selected.get('source') == '自定义':
+            topic_ctx = state.get('topic_context', {})
+            if topic_ctx and topic_ctx.get('id'):
+                print(f"📦 ID 直接匹配失败，尝试从当前状态恢复选题: {topic_ctx.get('title')}")
+                selected = topic_ctx
+
         if not selected or not isinstance(selected, dict):
-            print(f"⚠️ 未在缓存的候选列表中找到ID '{topic_id_or_cmd}'，将作为自定义话题处理。")
+            print(f"⚠️ 未在缓存的候选列表中找到ID '{topic_id_or_cmd}'，且无有效状态背景，将作为自定义话题处理。")
             selected = {"id": topic_id_or_cmd, "source": "自定义", "title": topic_id_or_cmd, "author": "User"}
 
         source_val = str(selected.get('source', ''))

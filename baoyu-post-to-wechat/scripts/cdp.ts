@@ -14,6 +14,9 @@ import {
   type PlatformCandidates,
 } from 'baoyu-chrome-cdp';
 
+// 远程 CDP 连接配置（可选，不配置则走本地连接）
+export const REMOTE_CDP_URL = process.env.WECHAT_CDP_REMOTE_URL; // 例如: wss://abc123.cf-tunnel.com
+
 export { CdpConnection, sleep, waitForChromeDebugPort };
 
 const CHROME_CANDIDATES_FULL: PlatformCandidates = {
@@ -94,6 +97,19 @@ export interface ChromeSession {
 
 export async function tryConnectExisting(port: number): Promise<CdpConnection | null> {
   try {
+    // 优先使用远程 CDP URL（方案二核心改动）
+    if (REMOTE_CDP_URL) {
+      // 支持两种格式：
+      // 1. wss://chrome.us.ci/devtools/page/<id> - 直接连接指定页面
+      // 2. wss://chrome.us.ci - 先连接再自动选择目标页面
+      const wsUrl = REMOTE_CDP_URL.includes('/devtools/page/') 
+        ? REMOTE_CDP_URL 
+        : REMOTE_CDP_URL;
+      console.log(`[cdp] 使用远程 CDP: ${wsUrl}`);
+      return await CdpConnection.connect(wsUrl, 30_000);
+    }
+    
+    // 原有本地连接逻辑保持不变
     const wsUrl = await waitForChromeDebugPort(port, 5_000, { includeLastError: true });
     return await CdpConnection.connect(wsUrl, 5_000);
   } catch {
@@ -102,6 +118,11 @@ export async function tryConnectExisting(port: number): Promise<CdpConnection | 
 }
 
 export async function findExistingChromeDebugPort(profileDir = getDefaultProfileDir()): Promise<number | null> {
+  // 远程模式下不需要查找本地端口
+  if (REMOTE_CDP_URL) {
+    console.log('[cdp] 远程模式下跳过本地端口检测');
+    return null;
+  }
   return await findExistingChromeDebugPortBase({ profileDir });
 }
 
@@ -110,6 +131,11 @@ export async function launchChrome(
   profileDir?: string,
   chromePathOverride?: string,
 ): Promise<{ cdp: CdpConnection; chrome: ChildProcess }> {
+  // 远程模式下不需要启动本地 Chrome
+  if (REMOTE_CDP_URL) {
+    throw new Error('[cdp] 远程模式下不应调用 launchChrome，请确保 Windows Chrome 已启动');
+  }
+  
   const chromePath = findChromeExecutable(chromePathOverride);
   if (!chromePath) throw new Error('Chrome not found. Set WECHAT_BROWSER_CHROME_PATH env var.');
 

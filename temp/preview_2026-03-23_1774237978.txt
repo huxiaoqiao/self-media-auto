@@ -1,0 +1,109 @@
+TITLE:OpenClaw 进阶-让你的 Agent 控制浏览器
+AUTHOR:未知作者
+SOURCE:公众号
+URL:https://mp.weixin.qq.com/s/5rgfQADxiVsbu5v7Iplaug
+
+# OpenClaw 进阶-让你的 Agent 控制浏览器
+
+**作者**: 可夫小子
+**发布时间**: 2026年3月18日 20:44
+
+---
+
+💡 大家好，我是可夫小子，一名内容创作者，关注AI编程、自动化和自媒体。
+
+OpenClaw 自带的上网能力很弱，一直被诟病，动不动就是需要手动设置插件，指挥用户去干活。最新的 OpenClaw 2026.3.13在这方面有较大的升级。
+
+根据 Changelog：
+
+Browser/existing-session: add an official Chrome DevTools MCP attach mode for signed-in live Chrome sessions, with docs for chrome://inspect/#remote-debugging enablement
+
+2026.3.13 确实支持 Chrome DevTools MCP ，今天来验证一下，到底行不行
+
+前提条件
+Chrome 版本 ≥ 144（M144+）
+升级 OpenClaw 到 2026.3.13
+问题从这里来
+
+AI 可以帮我搜索内容，但它可以非常精准的操作我们自己的浏览器吗？我把这个问题抛给它，看它如何回答。
+
+我问他：打开我的淘宝，看一下我购物车里面有什么商品
+
+他回答：
+
+这看似能实现，但有两个问题
+
+它是调用一个 browser 的工具，是新开的一个浏览器，这个浏览器是一个独立的浏览器，里面没你的用户登陆信息
+淘宝平台有安全机制，当你扫码之后，并不能都能成功。
+
+我再问他：我当前浏览器已经登陆，是否可以使用我现在现在使用的 chrome 浏览器？
+
+看到 OpenClaw Browser Relay 这玩意就来火，一直连接不上，没有成功使用过一次。
+
+但现在有新的方案，源于 Google Chrome 浏览器的一项更新——Chrome MCP。
+
+Chrome MCP配置
+
+升级到Chrome 146，在 Chrome 里开启远程调试。
+
+检查版本
+打开远程调试
+
+打开 Chrome，在地址栏输入： chrome://inspect/#remote-debugging
+
+智能体Chrome Dev Tools MCP配置
+以gemini cli为例
+打开配置文件，code .gemini/settings.json ，添加上 MCP 服务
+"mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "chrome-devtools-mcp@latest",
+        "--autoConnect"
+      ]
+    }
+  }
+进入 gemini 终端，执行/mcp list 查看已经连接成功
+测试：打开我的淘宝，看一下我购物车里面有什么商品
+
+开始正确调用到 chrome-devtools mcp 服务了，浏览器也弹出授权信息
+
+正确执行任务。
+
+以 OpenClaw 为例
+
+v2026.3.2的 OpenClaw并不支持直接调用MCP，需要更新到v2026.3.13 ，
+
+先升级到最新的版本v2026.3.3。
+在 openclaw.json 里面添加配置：
+{
+  browser: {
+    enabled: true,
+    profiles: {
+      "my-chrome": {
+        driver: "existing-session",
+        color: "#FF6B6B"
+      }
+    },
+    defaultProfile: "my-chrome"
+  }
+}
+查询状态：openclaw browser --browser-profile user status 其实我只执行了这个任务，他就自动配置好了。
+
+测试：给我 X 点一个赞
+
+后面的话
+
+上面我演示了两种使用场景，可以看到浏览器的自动化能力提升不了少。结论，可以升级冲了。
+
+🧨 彩蛋
+
+我的《AI编程与自动化》2026训练营正式开营，以AI编程为驱动，让每个个体都拥有自己的小产品。训练营已积累了我过去三年200篇+的教程和案例。都是我自己实操总结，都是使用心得，并非复制网上过时的信息。现在以每周至少三篇的更新频率，让你获得最新、最接地气的AI资讯和教程。
+
+知识库模块
+
+现在限时最大优惠，原价99，扫码领券，立减50元，只需要 49 元。感兴趣可以扫码加入。
+
+用十年时间干一件事，就从今天开始。欢迎登船，期待开始一场十年的AI之旅。
+
+📎 有任何疑问可以加我：keeepdance，备注：AI编程。
