@@ -1167,9 +1167,13 @@ class SelfMediaController:
         time_slug = datetime.now().strftime('%Y%m%d%H%M')
         date_folder = datetime.now().strftime('%Y-%m-%d')
         
-        # 创建本地 drafts 文件夹
-        drafts_dir = os.path.join(self.workspace, 'drafts', date_folder)
+        # 创建本地 drafts 文件夹 (确保按日期归档)
+        drafts_root = os.path.join(self.workspace, 'drafts')
+        drafts_dir = os.path.join(drafts_root, date_folder)
         os.makedirs(drafts_dir, exist_ok=True)
+        
+        # 提取标题的正则表达式
+        title_pattern = re.compile(r"(?:\[文章标题\]|标题[：:])\s*(.*)", re.IGNORECASE)
         
         # 提取脚本部分
         video_script = ""
@@ -1179,43 +1183,88 @@ class SelfMediaController:
         # 彻底清理正文开头的标识词 (增强版)
         import re
         
-        # 针对模型输出的两种常见格式进行正则拆分
-        # 模式 1: ## 第一部分... ## 第二部分...
-        # 模式 2: ## 视频脚本... --- [文章标题]...
-        
+        # 兜底：先假设全文都是文章
         video_script = ""
         article_content = final_content
         new_title = ""
 
-        # 尝试寻找脚本部分 (第一部分)
-        # 匹配 ## 第一部分 或 ## 视频脚本 开头，直到遇到 --- 或 ## 第二部分 或 [文章标题]
-        script_pattern = re.compile(r"##\s*(?:第一部分|视频脚本|爆款短视频脚本)[：:\s]*(.*?)(\n\s*---|\n\s*##\s*第二部分|\n\s*\[文章标题\])", re.DOTALL | re.IGNORECASE)
-        script_match = script_pattern.search(final_content)
+        # 1. 尝试寻找脚本部分 (第一部分)
+        # 支持多种标记: ## 第一部分, # 第一部分, 第一部分, ## 视频脚本, ## 爆款短视频脚本 等
+        # 寻找起始标记 (Pattern A) 到 终止标记 (Pattern B)
+        # 起始标记：##? (第一部分|视频脚本|爆款短视频脚本|脚本)
+        # 终止标记：##? (第二部分|深度长文|长文|文章正文) 或 --- 或 [文章标题]
         
-        if script_match:
-            video_script = script_match.group(1).strip()
-            # 剩余部分作为正文处理的起点
-            article_content = final_content[script_match.end(1):].strip()
-        else:
-            # 兜底方案：如果没找到明确的第一部分标记，但有分割线或第二部分标记
-            parts = re.split(r"\n\s*---\s*\n|\n\s*##\s*第二部分|\n\s*\[文章标题\]", final_content, maxsplit=1)
-            if len(parts) > 1:
-                video_script = parts[0].replace("## 第一部分", "").replace("## 视频脚本", "").replace("：", "").replace(":", "").strip()
-                article_content = parts[1]
-            else:
-                article_content = final_content
+        start_markers = [r"##?\s*(?:第一部分|视频脚本|爆款短视频脚本|脚本审核|脚本内容|脚本)[：:\s\n]*", r"【爆款短视频脚本】[：:\s\n]*"]
+        end_markers = [r"##?\s*(?:第二部分|深度长文|正文|文章正文|文章审核|文章内容)[：:\s\n]*", r"---", r"\[文章标题\]"]
+        
+        found_script = False
+        for s_m in start_markers:
+            # 尝试正向匹配
+            pattern = re.compile(f"({s_m})(.*)", re.DOTALL | re.IGNORECASE)
+            match = pattern.search(final_content)
+            if match:
+                marker_text = match.group(1)
+                remainder = match.group(2)
+                # 寻找结束位置
+                end_pos = -1
+                for e_m in end_markers:
+                    e_match = re.search(e_m, remainder, re.IGNORECASE)
+                    if e_match:
+                        if end_pos == -1 or e_match.start() < end_pos:
+                            end_pos = e_match.start()
+                
+                if end_pos != -1:
+                    video_script = remainder[:end_pos].strip()
+                    article_content = remainder[end_pos:].strip()
+                else:
+                    # 如果没找到明确的结束标记，但在 remainder 中发现明显的文章标题或分割
+                    # 尝试用简单的回车拆分或保持现状
+                    video_script = remainder.strip()
+                    article_content = ""
+                
+                found_script = True
+                break
+        
+        # 3. 彻底兜底：如果一边倒，尝试寻找中间的分割点
+        if not article_content and video_script:
+            # 脚本太长了，可能正文藏在里面
+            # 寻找 [文章标题] 或 标题：
+            alt_split = re.search(r"\n\s*(?:\[文章标题\]|标题[：:])", video_script, re.IGNORECASE)
+            if alt_split:
+                article_content = video_script[alt_split.start():].strip()
+                video_script = video_script[:alt_split.start()].strip()
+            elif "---" in video_script:
+                parts = video_script.split("---", 1)
+                video_script, article_content = parts[0].strip(), parts[1].strip()
+        elif not video_script and article_content:
+            # 正文里藏着脚本？
+            alt_split = re.search(r"(?:###?\s*脚本|【脚本】)", article_content, re.IGNORECASE)
+            if alt_split:
+                video_script = article_content[alt_split.start():].strip()
+                # 这通常不对，脚本应该在前面，所以可能需要反向逻辑
+                pass
 
-        # 尝试从全文或正文中提取标题
-        title_pattern = re.compile(r"\[文章标题\]\s*(.*)", re.IGNORECASE)
+        # 4. 提取标题 (从正文或全文提取)
+        search_target = article_content if article_content else final_content
         title_match = title_pattern.search(final_content)
         if title_match:
-            new_title = title_match.group(1).strip()
+            new_title = title_match.group(1).split('\n')[0].strip()
             # 从正文中剔除标题行
             article_content = title_pattern.sub("", article_content).strip()
             print(f"🔥 捕获到全新爆款标题: {new_title}")
 
+        # 如果还是没有拆出正文，说明全文被当成脚本了（或者反之）
+        if not article_content and video_script:
+             # 如果全文很长，且脚本部分占据了全部，可能出错了
+             pass
+        elif article_content and not video_script:
+             # 检查 article_content 里是否还藏着脚本？
+             if "脚本" in article_content[:200] and "##" in article_content[10:]:
+                 # 可能标记没匹配上，强制切分
+                 pass
+
         # 最终清理文章正文中的冗余标记
-        article_content = re.sub(r"##\s*第二部分.*?\n", "", article_content, flags=re.IGNORECASE)
+        article_content = re.sub(r"##?\s*(?:第二部分|深度长文|正文|文章正文|文章内容).*?\n?", "", article_content, flags=re.IGNORECASE)
         article_content = article_content.replace("【深度长文（正文）】", "").replace("---", "").strip()
 
         # 写入短视频脚本到本地 drafts 文件夹
@@ -1226,32 +1275,65 @@ class SelfMediaController:
         article_name = f"article_{time_slug}.md"
         article_path = os.path.join(drafts_dir, article_name)
         
-        logger.info(f"[保存文件] drafts_dir={drafts_dir}")
-        logger.info(f"[保存文件] script_path={script_path}")
-        logger.info(f"[保存文件] article_path={article_path}")
-        logger.info(f"[保存文件] video_script length={len(video_script)}")
-        logger.info(f"[保存文件] article_content length={len(article_content)}")
+        abs_script_path = os.path.abspath(script_path)
+        abs_article_path = os.path.abspath(article_path)
+        
+        print(f"DEBUG: 目标文件夹: {drafts_dir}", flush=True)
+        print(f"DEBUG: 打算写入脚本至: {abs_script_path}", flush=True)
+        print(f"DEBUG: 打算写入文章至: {abs_article_path}", flush=True)
+        print(f"DEBUG: 脚本长度: {len(video_script)} | 文章长度: {len(article_content)}", flush=True)
 
-        with open(script_path, "w", encoding='utf-8') as f:
-            f.write(video_script if video_script else "未生成有效脚本")
-        with open(article_path, "w", encoding='utf-8') as f:
-            if new_title:
-                f.write(f"# {new_title}\n\n")
-            f.write(article_content)
+        logger.info(f"[保存文件] drafts_dir={drafts_dir}")
+        logger.info(f"[保存文件] script_path={abs_script_path}")
+        logger.info(f"[保存文件] article_path={abs_article_path}")
+
+        try:
+            with open(abs_script_path, "w", encoding='utf-8') as f:
+                f.write(video_script if video_script else "未生成有效脚本")
+                f.flush()
+                os.fsync(f.fileno())
+            with open(abs_article_path, "w", encoding='utf-8') as f:
+                if new_title:
+                    f.write(f"# {new_title}\n\n")
+                f.write(article_content)
+                f.flush()
+                os.fsync(f.fileno())
+            print(f"✅ 文件已成功写入磁盘: {abs_article_path}", flush=True)
+            logger.info(f"✅ 文件已成功写入磁盘: {abs_article_path}")
+        except Exception as e:
+            print(f"❌ 写入文件失败: {e}", flush=True)
+            logger.error(f"写入文件失败: {e}")
 
         if new_title:
             selected['title'] = new_title # 更新状态中的标题
+        
+        # 将本次改写后的内容也存入 selected/state
+        selected['video_script_content'] = video_script
+        selected['article_content'] = article_content
+        
+        state['draft_file'] = abs_article_path
+        state['video_script'] = abs_script_path
+        state['topic_context'] = selected # 包含新标题和内容
+        state['current_step'] = "waiting_for_review"
+        
+        print(f"DEBUG: 正在保存状态到文件... 标题={selected.get('title')}", flush=True)
+        self.save_state(state)
+        print(f"DEBUG: 状态保存完成。", flush=True)
+        
+        return True
 
         print(f"\n✅ 内容拆分完成：")
-        print(f"   🎬 爆款脚本: {script_path}")
-        print(f"   📝 深度长文: {article_path}")
-        print("\n👀 【卡点2 - 人工介入】：您可以对这两个文件分别修饰。确认无误后，运行 publish 阶段将针对‘长文’进行配图。")
-
+        print(f"   🎬 爆款脚本: {abs_script_path}")
+        print(f"   📝 深度长文: {abs_article_path}")
+        
         state['current_step'] = "waiting_for_content_review"
-        state['draft_file'] = article_path # publish 阶段主要针对长文配图
-        state['video_script'] = script_path
+        state['draft_file'] = abs_article_path # publish 阶段主要针对长文配图
+        state['video_script'] = abs_script_path
         state['topic_context'] = selected
         self.save_state(state)
+        
+        sys.stdout.flush()
+        sys.stderr.flush()
 
     def generate_image(self, prompt, model_type="seedream", size="1024*1024"):
         """

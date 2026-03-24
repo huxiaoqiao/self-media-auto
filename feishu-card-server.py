@@ -241,10 +241,12 @@ class FeishuHandler(BaseHTTPRequestHandler):
             topic_id_str = str(topic_id).strip()
             candidates = state.get('last_candidates', [])
 
-            # Try as 1-based array index from "topic_05" -> 5
+            # Try as numeric index (e.g., "1" or "insight_1")
             numeric_id = None
             try:
-                numeric_id = int(topic_id_str.split('_')[-1])
+                # Handle "insight_1" or "1"
+                raw_id = topic_id_str.split('_')[-1]
+                numeric_id = int(raw_id)
             except ValueError:
                 pass
 
@@ -288,9 +290,50 @@ class FeishuHandler(BaseHTTPRequestHandler):
             print(f"[DEBUG] handle_card_action: {repr(action_value)}", flush=True)
             token = self.get_token()
 
-            # Strip common garbled quote chars
-            for q in '"\'铐牢笼非':
-                action_value = action_value.strip(q)
+            # Strip common garbled quote chars and whitespaces
+            if isinstance(action_value, str):
+                for q in '"\'铐牢笼非':
+                    action_value = action_value.strip(q)
+                action_value = action_value.strip()
+
+            # Fix for JSON string action_value: try to parse it properly
+            if isinstance(action_value, str) and ('{' in action_value or action_value.startswith('\\{')):
+                try:
+                    import re
+                    # Clean up escaped characters first
+                    clean_val = action_value.replace('\\"', '"').replace('\\\\', '\\')
+                    # Try to parse as JSON
+                    parsed = json.loads(clean_val)
+                    if isinstance(parsed, dict):
+                        raw_action = parsed.get('action', '')
+                        raw_id = str(parsed.get('id', '')) if parsed.get('id') is not None else ''
+                        # raw_action like "insight_topic" -> extract base action
+                        if '_' in raw_action:
+                            action_value = raw_action  # e.g. "insight_topic"
+                        else:
+                            action_value = f"{raw_action}_{raw_id}" if raw_id else raw_action
+                        print(f"[DEBUG] Parsed JSON action_value: {action_value}", flush=True)
+                        # Skip the regex path below
+                        parts = action_value.split('_', 1)
+                        action_type = parts[0] if parts else 'unknown'
+                        topic_id = parts[1] if len(parts) > 1 else None
+                        if action_type == 'insight':
+                            if topic_id:
+                                self.update_topic_context_by_id(token, topic_id)
+                            threading.Thread(target=self.run_insight_and_send_card, args=(token, action_value)).start()
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"code": 0, "msg": "success"}).encode('utf-8'))
+                            return
+                        # ... handle other types similarly or fall through
+                except Exception as e:
+                    print(f"[WARN] JSON parse failed: {e}", flush=True)
+                    # Fall through to regex-based parsing
+
+            # Robust splitting: handle cases where action_value might still have leftover quotes or escapes
+            if isinstance(action_value, str):
+                action_value = action_value.replace('"', '').replace('\\', '').strip()
 
             parts = action_value.split('_', 1)
             action_type = parts[0] if parts else 'unknown'
@@ -508,14 +551,21 @@ class FeishuHandler(BaseHTTPRequestHandler):
         elements.append({"tag": "hr"})
 
         for i, t in enumerate(topics):
-            # 序号用 i+1（纯数字），id 字段保持为 URL 供 lookup 使用
+            # 序号用 i+1（纯数字）
             topic_num = i + 1
-            # 确保 last_candidates 里存的是 URL 作为 id，url 字段也存 URL
+            
+            # 提取干净的标题和 URL
+            title = str(t.get('title', '未知选题')).strip()
             topic_url = t.get('url', '') or t.get('id', '')
-            # 按钮 value 用序号，但 last_candidates 条目用 URL 作为 id
+            
+            # 防御性：如果标题看起来像 URL，尝试使用 data 或截断
+            if title.startswith('http'):
+                title = f"选题 {topic_num}"
+                
+            # 按钮 value 用序号位，确保 handle_card_action 能找回
             elements.append({
                 "tag": "markdown",
-                "content": f"**🔥 [{topic_num}] {t.get('title', '')}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({topic_url})"
+                "content": f"**🔥 [{topic_num}] {title}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({topic_url})"
             })
             elements.append({
                 "tag": "action",
@@ -653,6 +703,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
         """Run repurpose - generate script + article, send two review cards."""
         try:
             os.chdir(WORKDIR)
+            topic_id = action_value.split('_', 1)[1] if '_' in action_value else action_value
             # 关键修复：如果 topic_id 是临时的 review ID，需要从 state 中还原真实 ID
             if topic_id in ['script_01', 'article_01']:
                 try:
@@ -665,11 +716,27 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"[WARN] Failed to revert ID: {e}", flush=True)
 
-            cmd = ['python', '-X', 'utf8', 'workflow_controller.py', 'repurpose']
+            import sys
+            cmd = [sys.executable, '-X', 'utf8', 'workflow_controller.py', 'repurpose']
             if topic_id:
                 cmd.extend(['--id', topic_id])
 
+            print(f"[DEBUG] Executing: {' '.join(cmd)}", flush=True)
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            
+            # 调试：记录子进程的所有输出
+            debug_log = os.path.join(WORKDIR, "subprocess_debug.log")
+            with open(debug_log, "a", encoding='utf-8') as debug_f:
+                debug_f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] repurposed topic_id={topic_id}\n")
+                debug_f.write(f"RET: {result.returncode}\n")
+                debug_f.write(f"STDOUT: {result.stdout}\n")
+                debug_f.write(f"STDERR: {result.stderr}\n")
+                debug_f.write("-" * 40 + "\n")
+
+            if result.returncode != 0:
+                print(f"[ERROR] repurpose failed with returncode {result.returncode}\nstderr:\n{result.stderr}\nstdout:\n{result.stdout}", flush=True)
+                self.send_text(token, f"⚠️ 改写过程失败 (返回码 {result.returncode})，原文件提取可能失败，请检查终端日志。")
+                return
 
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)

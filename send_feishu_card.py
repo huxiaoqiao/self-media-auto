@@ -120,11 +120,18 @@ def build_topic_list_card(topics: list, industry: str = "AI") -> dict:
     elements.append({"tag": "hr"})
 
     for i, topic in enumerate(topics):
-        topic_id = str(topic.get("id", i + 1))
+        # 序号用数组索引（1-5），不用 id 字段（id 是原文 URL）
+        display_num = i + 1
+        topic_id = str(display_num)
         title = topic.get("title", "")
-        data = topic.get("data", "")
-        url = topic.get("url", "")
-        analysis = topic.get("analysis", "")
+        # data/url/analysis 如果没有，就从现有字段构造
+        likes = topic.get("likes", 0)
+        comments = topic.get("comments", 0)
+        author = topic.get("author", "")
+        score = topic.get("score", 0)
+        data = topic.get("data", f"👁️ 阅读: {comments} | 👍 赞: {likes} | 🔥 热度: {score}")
+        url = topic.get("url") or topic.get("id", "")
+        analysis = topic.get("analysis", f"👤 {author} | 爆款指数: {score}")
 
         elements.append({
             "tag": "markdown",
