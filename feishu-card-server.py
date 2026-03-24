@@ -396,16 +396,22 @@ class FeishuHandler(BaseHTTPRequestHandler):
             print(f"[DEBUG] parsed topics count: {len(topics)}", flush=True)
 
             if topics:
-                for i, topic in enumerate(topics[:5]):
-                    print(f"[DEBUG] Sending card {i+1}: {topic['title'][:30]}...", flush=True)
-                    card = self.build_topic_card(
-                        topic['title'],
-                        topic['data'],
-                        topic['url'],
-                        topic.get('analysis', '爆款选题'),
-                        f"topic_{i+1:02d}"
-                    )
-                    self.send_card(token, card)
+                # Save candidates to state file (required for topic context lookup)
+                try:
+                    with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                        state = json.load(f)
+                    state['last_candidates'] = topics
+                    state['candidates_page_index'] = 1
+                    state['candidates_page_size'] = 5
+                    with open(STATE_FILE, 'w', encoding='utf-8') as f:
+                        json.dump(state, f, ensure_ascii=False, indent=2)
+                    print(f"[DEBUG] Saved {len(topics)} candidates to state", flush=True)
+                except Exception as e:
+                    print(f"[WARN] Failed to save candidates to state: {e}", flush=True)
+
+                # Send single batch card with all topics
+                batch_card = self.build_topic_list_card(topics, "AI")
+                self.send_card(token, batch_card)
             else:
                 print(f"[DEBUG] No topics parsed, output preview: {output[:500]}", flush=True)
                 self.send_text(token, "⚠️ 获取选题失败，请稍后重试或手动发'选题'获取")
@@ -416,7 +422,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.send_text(token, f"⚠️ 操作失败: {str(e)[:100]}")
 
     def parse_discovery_output(self, output):
-        """Parse topic data from workflow output."""
+        """Parse topic data from workflow output.
+        Returns list of dicts with keys: id (URL), title, source, author, score, data (display string), analysis.
+        """
         topics = []
         lines = output.split('\n')
         current_topic = None
@@ -425,34 +433,58 @@ class FeishuHandler(BaseHTTPRequestHandler):
             # Match pattern: 1. [source] [title](URL)
             topic_match = re.match(r'^\d+\.\s*\[([^\]]*)\]\s*\[(.+?)\]\((https?://[^\)]+)\)', line)
             if topic_match:
+                source = topic_match.group(1).strip()
                 title = topic_match.group(2).strip()
                 url = topic_match.group(3).strip()
-                current_topic = {'title': title, 'url': url, 'data': '', 'analysis': '爆款选题'}
+                current_topic = {
+                    'id': url,
+                    'title': title,
+                    'source': source,
+                    'author': '',
+                    'score': '',
+                    'data': '',
+                    'analysis': '爆款选题'
+                }
                 continue
 
-            # Extract metrics: 阅读: 52126 | 赞: 367 | 热度: 8984
-            if current_topic and ('阅读' in line or '赞' in line):
+            # Extract metrics: 👤 author | 👁️ 阅读: xxx | 👍 赞: xxx | 🔥 热度: xxx
+            if current_topic:
+                author_match = re.search(r'👤\s*([^\s|]+)', line)
+                if author_match and not current_topic.get('author'):
+                    current_topic['author'] = author_match.group(1).strip()
+
                 read_match = re.search(r'阅读[:\s]*([\d万+]+)', line)
                 like_match = re.search(r'赞[赞:\s]*([\d万+]+)', line)
                 heat_match = re.search(r'热度[:\s]*([\d万+]+)', line)
 
                 data_parts = []
+                score_val = 0
                 if read_match:
-                    data_parts.append(f"阅读: {read_match.group(1)}")
+                    val = read_match.group(1)
+                    data_parts.append(f"阅读: {val}")
+                    try: score_val += int(val.replace('万', '')) * 10000 if '万' in val else int(val)
+                    except: pass
                 if like_match:
-                    data_parts.append(f"赞: {like_match.group(1)}")
+                    val = like_match.group(1)
+                    data_parts.append(f"赞: {val}")
+                    try: score_val += int(val.replace('万', '')) * 1000 if '万' in val else int(val)
+                    except: pass
                 if heat_match:
-                    data_parts.append(f"热度: {heat_match.group(1)}")
+                    val = heat_match.group(1)
+                    data_parts.append(f"热度: {val}")
+                    try: score_val += int(val.replace('万', '')) * 100 if '万' in val else int(val)
+                    except: pass
 
                 if data_parts:
                     current_topic['data'] = ' | '.join(data_parts)
+                    current_topic['score'] = str(score_val)
                     topics.append(current_topic)
                     current_topic = None
 
         return topics[:5]
 
     def build_topic_card(self, title, data_str, url, analysis, topic_id):
-        """Build topic selection card."""
+        """Build single topic selection card."""
         return {
             "config": {"wide_screen_mode": True},
             "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🔥 新一期选题推送"}},
@@ -462,9 +494,55 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": f"ID: {topic_id}"}]},
                 {"tag": "action", "actions": [
                     {"tag": "button", "text": {"tag": "plain_text", "content": "🔍 解读此选题"}, "type": "primary", "value": f"insight_{topic_id}"},
-                    {"tag": "button", "text": {"tag": "plain_text", "content": "🔄 换一批"}, "type": "default", "value": f"next_{topic_id}"}
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "🔄 换一批"}, "type": "default", "value": "next"}
                 ]}
             ]
+        }
+
+    def build_topic_list_card(self, topics, industry="AI"):
+        """Build batch topic card (all topics in one card).
+        topics: list of dicts with keys: id(str), title, data, url, analysis, source, author, score
+        """
+        elements = []
+        elements.append({"tag": "markdown", "content": f"**🔥 {industry}赛道 · 今日爆款选题 TOP {len(topics)}**"})
+        elements.append({"tag": "hr"})
+
+        for i, t in enumerate(topics):
+            topic_id = str(t.get("id", i + 1))
+            elements.append({
+                "tag": "markdown",
+                "content": f"**🔥 [{topic_id}] {t.get('title', '')}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({t.get('url', '')})"
+            })
+            elements.append({
+                "tag": "action",
+                "actions": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": f"🔍 解读选题 {topic_id}"},
+                    "type": "primary",
+                    "value": f"insight_{topic_id}"
+                }]
+            })
+            if i < len(topics) - 1:
+                elements.append({"tag": "hr"})
+
+        # Bottom action buttons (with descriptions)
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "action",
+            "actions": [
+                {"tag": "button", "text": {"tag": "plain_text", "content": "📋 换一批（查看更多爆款选题）"}, "type": "default", "value": "next"},
+                {"tag": "button", "text": {"tag": "plain_text", "content": "⚙️ 初始化（重置IP名称/行业赛道）"}, "type": "default", "value": "init"}
+            ]
+        })
+        elements.append({
+            "tag": "note",
+            "elements": [{"tag": "plain_text", "content": "💡 点击上方按钮选择选题，或直接发送序号 1-5 选择"}]
+        })
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {"template": "purple", "title": {"tag": "plain_text", "content": f"🚀 IP 爆款选题推荐 · {industry}赛道"}},
+            "elements": elements
         }
 
     def run_insight_and_send_card(self, token, action_value):

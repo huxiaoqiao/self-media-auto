@@ -106,22 +106,26 @@ def build_topic_card(title: str, data_str: str, url: str, analysis: str, topic_i
 
 def build_topic_list_card(topics: list, industry: str = "AI") -> dict:
     """
-    批量选题卡片（多选题合一张卡）
-    topics: list of dict, each with keys: id, title, data, url, analysis
+    批量选题卡片（多选题合一张卡，固定样式）
+    topics: list of dict, each with keys: id (str), title, data, url, analysis
+    样式规范：
+    - 每个选题：标题（含序号）、数据、爆点分析、原文链接、解读按钮
+    - 序号格式：纯数字 1-5（不用 topic_01）
+    - 底部：换一批（查看更多）+ 初始化（重置配置）+ 提示文字
     """
     elements = []
-    
-    # 顶部 Industry 标识
-    elements.append({"tag": "markdown", "content": f"**🔥 AI赛道 · 爆款选题 TOP {len(topics)}**"})
+
+    # 顶部标题
+    elements.append({"tag": "markdown", "content": f"**🔥 {industry}赛道 · 今日爆款选题 TOP {len(topics)}**"})
     elements.append({"tag": "hr"})
-    
+
     for i, topic in enumerate(topics):
-        topic_id = topic.get("id", i + 1)
+        topic_id = str(topic.get("id", i + 1))
         title = topic.get("title", "")
         data = topic.get("data", "")
         url = topic.get("url", "")
         analysis = topic.get("analysis", "")
-        
+
         elements.append({
             "tag": "markdown",
             "content": f"**🔥 [{topic_id}] {title}**\n📊 {data}\n💡 {analysis}\n🔗 [原文链接]({url})"
@@ -130,27 +134,32 @@ def build_topic_list_card(topics: list, industry: str = "AI") -> dict:
             "tag": "action",
             "actions": [{
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": f"🔍 解读选题{topic_id}"},
+                "text": {"tag": "plain_text", "content": f"🔍 解读选题 {topic_id}"},
                 "type": "primary",
                 "value": f"insight_{topic_id}"
             }]
         })
         if i < len(topics) - 1:
             elements.append({"tag": "hr"})
-    
-    # 底部操作按钮
+
+    # 底部操作按钮（带说明）
     elements.append({"tag": "hr"})
     elements.append({
         "tag": "action",
         "actions": [
-            {"tag": "button", "text": {"tag": "plain_text", "content": "📋 换一批（查看剩余10个选题）"}, "type": "default", "value": "refresh"},
+            {"tag": "button", "text": {"tag": "plain_text", "content": "📋 换一批（查看更多爆款选题）"}, "type": "default", "value": "next"},
             {"tag": "button", "text": {"tag": "plain_text", "content": "⚙️ 初始化（重置IP名称/行业赛道）"}, "type": "default", "value": "init"}
         ]
     })
-    
+    # 底部提示
+    elements.append({
+        "tag": "note",
+        "elements": [{"tag": "plain_text", "content": "💡 点击上方按钮选择选题，或直接发送序号 1-5 选择"}]
+    })
+
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "purple", "title": {"tag": "plain_text", "content": "🚀 IP 爆款选题推荐 · AI赛道"}},
+        "header": {"template": "purple", "title": {"tag": "plain_text", "content": f"🚀 IP 爆款选题推荐 · {industry}赛道"}},
         "elements": elements
     }
 
