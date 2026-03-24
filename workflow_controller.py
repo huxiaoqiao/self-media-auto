@@ -478,11 +478,19 @@ class SelfMediaController:
         """
         import requests
         
-        # 每次进入选题前自动重置状态，避免上次的pending数据干扰
-        self.reset_state()
-        
+        # 只加载已有状态，保留 draft_file、topic_context 等，不清空
         state = self.load_state()
         saved_industry = state.get('industry')
+        # 保留关键字段，不重置
+        preserved = {
+            'draft_file': state.get('draft_file'),
+            'video_script': state.get('video_script'),
+            'cover_image': state.get('cover_image'),
+            'topic_context': state.get('topic_context'),
+            'script_approved': state.get('script_approved', False),
+            'article_approved': state.get('article_approved', False),
+            'is_generating_cover': state.get('is_generating_cover', False),
+        }
 
         print("[嗅探系统] 启动 [嗅探子系统 - 次幂数据版]...")
         
@@ -646,10 +654,18 @@ class SelfMediaController:
         state['candidates_total'] = len(candidates)
         state['candidates_fetched_at'] = __import__('datetime').datetime.now().isoformat()
         # 清除旧的 pending 缓存，避免干扰新的选题解读
+        # 但保留 topic_context、draft_file 等关键字段（如果已有）
         state.pop('pending_url', None)
         state.pop('pending_content_file', None)
         state.pop('pending_type', None)
-        state.pop('topic_context', None)
+        # 恢复保留的字段
+        state['draft_file'] = preserved.get('draft_file')
+        state['video_script'] = preserved.get('video_script')
+        state['cover_image'] = preserved.get('cover_image')
+        state['topic_context'] = preserved.get('topic_context')
+        state['script_approved'] = preserved.get('script_approved', False)
+        state['article_approved'] = preserved.get('article_approved', False)
+        state['is_generating_cover'] = preserved.get('is_generating_cover', False)
         self.save_state(state)
 
     def run_next_topics(self):
