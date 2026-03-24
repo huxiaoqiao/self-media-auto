@@ -510,9 +510,12 @@ class FeishuHandler(BaseHTTPRequestHandler):
         for i, t in enumerate(topics):
             # 序号用 i+1（纯数字），id 字段保持为 URL 供 lookup 使用
             topic_num = i + 1
+            # 确保 last_candidates 里存的是 URL 作为 id，url 字段也存 URL
+            topic_url = t.get('url', '') or t.get('id', '')
+            # 按钮 value 用序号，但 last_candidates 条目用 URL 作为 id
             elements.append({
                 "tag": "markdown",
-                "content": f"**🔥 [{topic_num}] {t.get('title', '')}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({t.get('url', '')})"
+                "content": f"**🔥 [{topic_num}] {t.get('title', '')}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({topic_url})"
             })
             elements.append({
                 "tag": "action",
