@@ -318,7 +318,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 threading.Thread(target=self.run_rescript_and_send_card, args=(token, action_value)).start()
             elif action_type == 'rearticle':
                 threading.Thread(target=self.run_rearticle_and_send_card, args=(token, action_value)).start()
-            elif action_type == 'post':
+            elif action_type.startswith('post'):
                 threading.Thread(target=self.run_post, args=(token,)).start()
             elif action_type == 'copy':
                 self.send_copy_guide(token)
@@ -1091,13 +1091,26 @@ class FeishuHandler(BaseHTTPRequestHandler):
     def run_post(self, token):
         """Trigger post workflow."""
         try:
+            # Check if draft exists first
+            with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            draft_file = state.get('draft_file')
+            if not draft_file:
+                self.send_text(token, "⚠️ 未找到可发布的草稿，请先完成改写流程")
+                return
+            if not os.path.exists(draft_file):
+                self.send_text(token, f"⚠️ 草稿文件不存在: {draft_file}\n请重新执行改写流程")
+                return
+
             os.chdir(WORKDIR)
             result = subprocess.run(
                 ['python', 'workflow_controller.py', 'post', '--method', 'browser'],
-                capture_output=True, text=True, timeout=60
+                capture_output=True, text=True, timeout=90
             )
             if 'QR' in result.stdout or 'qr' in result.stdout.lower() or '二维码' in result.stdout:
                 self.send_text(token, "📱 请扫描二维码并扫码登录公众号后台")
+            elif result.returncode != 0 or 'error' in result.stdout.lower():
+                self.send_text(token, f"⚠️ 发布失败，请检查公众号后台\n错误信息: {result.stderr[:100] if result.stderr else result.stdout[:100]}")
             else:
                 self.send_text(token, "🚀 发布流程已启动，请检查公众号后台")
         except Exception as e:
