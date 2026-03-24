@@ -657,7 +657,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
             self.send_text(token, "🔄 改写进行中（脚本+文章），请稍候...\n（预计需要 20-40 秒）")
 
-            cmd = ['python', 'workflow_controller.py', 'repurpose']
+            cmd = ['python', '-X', 'utf8', 'workflow_controller.py', 'repurpose']
             if topic_id:
                 cmd.extend(['--id', topic_id])
 
