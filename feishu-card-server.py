@@ -508,18 +508,19 @@ class FeishuHandler(BaseHTTPRequestHandler):
         elements.append({"tag": "hr"})
 
         for i, t in enumerate(topics):
-            topic_id = str(t.get("id", i + 1))
+            # 序号用 i+1（纯数字），id 字段保持为 URL 供 lookup 使用
+            topic_num = i + 1
             elements.append({
                 "tag": "markdown",
-                "content": f"**🔥 [{topic_id}] {t.get('title', '')}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({t.get('url', '')})"
+                "content": f"**🔥 [{topic_num}] {t.get('title', '')}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({t.get('url', '')})"
             })
             elements.append({
                 "tag": "action",
                 "actions": [{
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": f"🔍 解读选题 {topic_id}"},
+                    "text": {"tag": "plain_text", "content": f"🔍 解读选题 {topic_num}"},
                     "type": "primary",
-                    "value": f"insight_{topic_id}"
+                    "value": f"insight_{topic_num}"
                 }]
             })
             if i < len(topics) - 1:
