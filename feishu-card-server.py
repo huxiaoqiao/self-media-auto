@@ -12,6 +12,11 @@ import time
 import threading
 import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import uuid
+
+# Global cache for topic mapping (GUID -> Topic Dict)
+# This prevents ID collisions across different batches/pages
+TOPIC_MAP = {}
 
 # Feishu App Config
 APP_ID = "cli_a930dedc42789cd1"
@@ -239,19 +244,31 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 state = json.load(f)
 
             topic_id_str = str(topic_id).strip()
-            candidates = state.get('last_candidates', [])
-
-            # Try as numeric index (e.g., "1" or "insight_1")
-            numeric_id = None
-            try:
-                # Handle "insight_1" or "1"
-                raw_id = topic_id_str.split('_')[-1]
-                numeric_id = int(raw_id)
-            except ValueError:
-                pass
+            # 1. 优先从全局映射中通过 GUID 查找
+            if topic_id_str in TOPIC_MAP:
+                selected = TOPIC_MAP[topic_id_str]
+                state['topic_context'] = {
+                    'id': selected.get('id', ''),
+                    'title': selected.get('title', ''),
+                    'source': selected.get('source', ''),
+                    'author': selected.get('author', ''),
+                    'score': selected.get('score', '')
+                }
+                updated = True
+                print(f"[DEBUG] Updated topic_context via TOPIC_MAP GUID {topic_id_str}: {selected.get('title', '')[:50]}", flush=True)
+            else:
+                # 2. 兜底逻辑：尝试作为数字索引查找 (向上兼容老卡片)
+                candidates = state.get('last_candidates', [])
+                numeric_id = None
+                try:
+                    # Handle "insight_1" or "1"
+                    raw_id = topic_id_str.split('_')[-1]
+                    numeric_id = int(raw_id)
+                except ValueError:
+                    pass
 
             updated = False
-            if numeric_id is not None and 0 < numeric_id <= len(candidates):
+            if not updated and numeric_id is not None and 0 < numeric_id <= len(candidates):
                 selected = candidates[numeric_id - 1]
                 state['topic_context'] = {
                     'id': selected.get('id', ''),
@@ -439,20 +456,21 @@ class FeishuHandler(BaseHTTPRequestHandler):
             print(f"[DEBUG] parsed topics count: {len(topics)}", flush=True)
 
             if topics:
-                # Save candidates to state file (required for topic context lookup)
-                try:
-                    with open(STATE_FILE, 'r', encoding='utf-8') as f:
-                        state = json.load(f)
-                    state['last_candidates'] = topics
-                    state['candidates_page_index'] = 1
-                    state['candidates_page_size'] = 5
-                    with open(STATE_FILE, 'w', encoding='utf-8') as f:
-                        json.dump(state, f, ensure_ascii=False, indent=2)
-                    print(f"[DEBUG] Saved {len(topics)} candidates to state", flush=True)
-                except Exception as e:
-                    print(f"[WARN] Failed to save candidates to state: {e}", flush=True)
+                # Save candidates to state file only if it's a fresh discovery
+                if use_refresh:
+                    try:
+                        with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                            state = json.load(f)
+                        state['last_candidates'] = topics
+                        state['candidates_page_index'] = 1
+                        state['candidates_page_size'] = 5
+                        with open(STATE_FILE, 'w', encoding='utf-8') as f:
+                            json.dump(state, f, ensure_ascii=False, indent=2)
+                        print(f"[DEBUG] Saved {len(topics)} fresh candidates to state", flush=True)
+                    except Exception as e:
+                        print(f"[WARN] Failed to save candidates to state: {e}", flush=True)
 
-                # Send single batch card with all topics
+                # ALWAYS send as batch card
                 batch_card = self.build_topic_list_card(topics, "AI")
                 self.send_card(token, batch_card)
             else:
@@ -521,10 +539,16 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 if data_parts:
                     current_topic['data'] = ' | '.join(data_parts)
                     current_topic['score'] = str(score_val)
+                    
+                    # 关键革新：生成全局唯一 ID 并加入映射
+                    guid = str(uuid.uuid4())[:8] # 取 8 位 UUID
+                    current_topic['guid'] = guid
+                    TOPIC_MAP[guid] = current_topic
+                    
                     topics.append(current_topic)
                     current_topic = None
 
-        return topics[:5]
+        return topics
 
     def build_topic_card(self, title, data_str, url, analysis, topic_id):
         """Build single topic selection card."""
@@ -562,7 +586,10 @@ class FeishuHandler(BaseHTTPRequestHandler):
             if title.startswith('http'):
                 title = f"选题 {topic_num}"
                 
-            # 按钮 value 用序号位，确保 handle_card_action 能找回
+            # 提取 GUID
+            guid = t.get('guid', str(topic_num))
+            
+            # 使用 GUID 作为按钮值，彻底解决 ID 冲突
             elements.append({
                 "tag": "markdown",
                 "content": f"**🔥 [{topic_num}] {title}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({topic_url})"
@@ -573,7 +600,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": f"🔍 解读选题 {topic_num}"},
                     "type": "primary",
-                    "value": f"insight_{topic_num}"
+                    "value": f"insight_{guid}" # 绑定 GUID
                 }]
             })
             if i < len(topics) - 1:
@@ -703,57 +730,87 @@ class FeishuHandler(BaseHTTPRequestHandler):
         """Run repurpose - generate script + article, send two review cards."""
         try:
             os.chdir(WORKDIR)
+            start_time = time.time()
+            
+            # 1. 强力净化：改写前彻底清理旧状态，并同步到磁盘，切断旧数据引用路径
+            try:
+                if os.path.exists(STATE_FILE):
+                    with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                        state_to_clean = json.load(f)
+                    state_to_clean['draft_file'] = None
+                    state_to_clean['video_script'] = None
+                    # 保存这个“干净”的状态，防止脚本读到旧值
+                    with open(STATE_FILE, 'w', encoding='utf-8') as f:
+                        json.dump(state_to_clean, f, ensure_ascii=False, indent=2)
+                    print(f"[DEBUG] [{time.strftime('%H:%M:%S')}] Cleared old draft paths in state file.", flush=True)
+            except Exception as e:
+                print(f"[WARN] Failed to clean state: {e}", flush=True)
+
+            # 2. 准备执行参数
             topic_id = action_value.split('_', 1)[1] if '_' in action_value else action_value
-            # 关键修复：如果 topic_id 是临时的 review ID，需要从 state 中还原真实 ID
+            # 还原真实 ID
             if topic_id in ['script_01', 'article_01']:
                 try:
                     with open(STATE_FILE, 'r', encoding='utf-8') as f:
                         temp_state = json.load(f)
                     real_id = temp_state.get('topic_context', {}).get('id')
-                    if real_id:
-                        print(f"[DEBUG] Reverting temporary ID {topic_id} to real ID: {real_id}", flush=True)
-                        topic_id = real_id
-                except Exception as e:
-                    print(f"[WARN] Failed to revert ID: {e}", flush=True)
+                    if real_id: topic_id = real_id
+                except: pass
 
             import sys
-            cmd = [sys.executable, '-X', 'utf8', 'workflow_controller.py', 'repurpose']
-            if topic_id:
-                cmd.extend(['--id', topic_id])
+            cmd = [sys.executable, '-X', 'utf8', 'workflow_controller.py', 'repurpose', '--id', str(topic_id)]
+            print(f"[DEBUG] Executing repurpose: {' '.join(cmd)}", flush=True)
 
-            print(f"[DEBUG] Executing: {' '.join(cmd)}", flush=True)
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            # 3. 执行子进程，延长超时时间至 300 秒以防 LLM 响应慢
+            process_start = time.time()
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            process_duration = time.time() - process_start
             
-            # 调试：记录子进程的所有输出
+            # 记录详细调试日志
             debug_log = os.path.join(WORKDIR, "subprocess_debug.log")
             with open(debug_log, "a", encoding='utf-8') as debug_f:
-                debug_f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] repurposed topic_id={topic_id}\n")
-                debug_f.write(f"RET: {result.returncode}\n")
-                debug_f.write(f"STDOUT: {result.stdout}\n")
-                debug_f.write(f"STDERR: {result.stderr}\n")
+                debug_f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] REPURPOSE RUN (ID: {topic_id[:30]}...)\n")
+                debug_f.write(f"Duration: {process_duration:.2f}s | RetCode: {result.returncode}\n")
+                if result.stderr: debug_f.write(f"STDERR samples: {result.stderr[:500]}\n")
                 debug_f.write("-" * 40 + "\n")
 
-            if result.returncode != 0:
-                print(f"[ERROR] repurpose failed with returncode {result.returncode}\nstderr:\n{result.stderr}\nstdout:\n{result.stdout}", flush=True)
-                self.send_text(token, f"⚠️ 改写过程失败 (返回码 {result.returncode})，原文件提取可能失败，请检查终端日志。")
+            # 4. 严格校验：如果进程失败或输出中没有包含保存成功的字样，严禁继续
+            success_markers = ["[保存文件]", "script_path=", "article_path="]
+            actually_saved = any(m in result.stdout for m in success_markers)
+            
+            if result.returncode != 0 or not actually_saved:
+                error_msg = f"⚠️ 改写流程执行异常 (Code {result.returncode})。"
+                if "timeout" in result.stderr.lower(): error_msg = "⚠️ 改写请求超时，请稍后重试。"
+                print(f"[ERROR] Repurpose verification failed. Stdout: {result.stdout[:200]}", flush=True)
+                self.send_text(token, f"{error_msg}\n可能原因：LLM 响应过慢或原内容抓取失败。")
                 return
 
+            # 5. 再次载入状态，并进行文件“新鲜度”校验
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
 
-            title = state.get('topic_context', {}).get('title', '内容')
             draft_file = state.get('draft_file', '')
             script_file = state.get('video_script', '')
 
+            # 如果路径依然为空，或者文件修改时间在启动之前，说明没写成功
+            def is_file_fresh(path, threshold_time):
+                if not path or not os.path.exists(path): return False
+                return os.path.getmtime(path) >= threshold_time
+
+            if not is_file_fresh(draft_file, start_time) and not is_file_fresh(script_file, start_time):
+                print(f"[ERROR] Stale files detected. Start: {start_time}, Draft: {os.path.getmtime(draft_file) if draft_file and os.path.exists(draft_file) else 'N/A'}", flush=True)
+                self.send_text(token, "⚠️ 检测到生成文件失效，请尝试重试按钮。")
+                return
+
+            # 6. 读取新生成的内容
+            title = state.get('topic_context', {}).get('title', '内容')
             article_full = ""
             if draft_file and os.path.exists(draft_file):
                 try:
                     with open(draft_file, 'r', encoding='utf-8') as f:
                         raw = f.read()
-                    raw = re.sub(r'^#+\s*', '', raw, flags=re.MULTILINE)
-                    article_full = raw.strip()
-                except Exception:
-                    pass
+                    article_full = re.sub(r'^#+\s*', '', raw, flags=re.MULTILINE).strip()
+                except: pass
             if not article_full:
                 article_full = "（未生成文章）"
 
@@ -795,7 +852,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.send_text(token, f"⚠️ 改写失败: {str(e)[:100]}")
 
     def build_review_card_v2(self, cover_path, title, content, tags, review_id, template="blue", header_title=None):
-        """Build review card with approve/modify/rewrite buttons."""
+        """Build review card with anti-fake labels and timestamps."""
         CHUNK_SIZE = 800
         paragraphs = []
         if content:
@@ -803,6 +860,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 chunk = content[i:i+CHUNK_SIZE]
                 paragraphs.append({"tag": "div", "text": {"tag": "lark_md", "content": chunk}})
 
+        now_str = time.strftime('%H:%M:%S')
         elements = []
         elements.append({
             "tag": "div",
@@ -810,7 +868,10 @@ class FeishuHandler(BaseHTTPRequestHandler):
         })
         elements.extend(paragraphs)
         elements.append({"tag": "hr"})
-        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"ID: {review_id}"}]})
+        elements.append({
+            "tag": "note", 
+            "elements": [{"tag": "plain_text", "content": f"流水号: {review_id} | 实时时间: {now_str} | [正品验证] ✨"}]
+        })
         elements.append({
             "tag": "action",
             "actions": [
@@ -820,7 +881,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             ]
         })
 
-        hdr = header_title if header_title else "📋 内容审核"
+        hdr = f"🚀 [实时] {header_title}" if header_title else "📋 [实时] 内容审核"
         return {
             "config": {"wide_screen_mode": True},
             "header": {"template": template, "title": {"tag": "plain_text", "content": hdr}},
@@ -1211,26 +1272,24 @@ class FeishuHandler(BaseHTTPRequestHandler):
         self.send_text(token, f"📋 以下是可复制文案：\n\n{content[:4000]}")
 
 
-def get_best_port():
-    """Try to find an available port starting from 18799."""
-    for port in [18799, 18800, 18801, 18802]:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.bind(('127.0.0.1', port))
-            s.close()
-            return port
-        except OSError:
-            continue
-    return 18799
-
-
 def main():
-    port = get_best_port()
-    server = HTTPServer(('127.0.0.1', port), FeishuHandler)
-    print(f"Feishu Card Server running on http://127.0.0.1:{port}")
-    print(f"Webhook endpoint: http://127.0.0.1:{port}/feishu/callback")
-    print(f"HTTP trigger: http://127.0.0.1:{port}/trigger")
-    server.serve_forever()
+    # Use a fixed port to ensure single instance
+    port = 18799
+    try:
+        server = HTTPServer(('127.0.0.1', port), FeishuHandler)
+        print(f"Feishu Card Server running on http://127.0.0.1:{port}")
+        print(f"Webhook endpoint: http://127.0.0.1:{port}/feishu/callback")
+        print(f"HTTP trigger: http://127.0.0.1:{port}/trigger")
+        server.serve_forever()
+    except OSError as e:
+        if e.errno == 98 or e.errno == 10048: # Address already in use
+            print(f"\n[CRITICAL] Port {port} is already in use!")
+            print(f"Another instance of feishu-card-server.py might be running.")
+            print(f"Please use 'taskkill /F /IM python.exe' if you want to restart.\n")
+        else:
+            print(f"[ERROR] Failed to start server: {e}")
+        import sys
+        sys.exit(1)
 
 
 if __name__ == '__main__':
