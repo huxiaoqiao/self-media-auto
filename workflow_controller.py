@@ -331,13 +331,20 @@ class SelfMediaController:
             if user_input: final_kv[key] = user_input
 
 
+        # 4. 配置 [个人 IP] 身份设定
+        print("\n" + "-"*30)
+        print("✍️  配置 [个人 IP] 身份设定")
+        print("-" * 30)
+
+        author_ip = input(f"👉 您的创作 IP 昵称 (当前: {current_env.get('AUTHOR_IP_NAME','大胡')}): ").strip()
+        final_kv["AUTHOR_IP_NAME"] = author_ip if author_ip else current_env.get("AUTHOR_IP_NAME", "大胡")
+
+        wechat_id = input(f"👉 您的引流微信号 (当前: {current_env.get('AUTHOR_WECHAT_ID','YXGJ156')}): ").strip()
+        final_kv["AUTHOR_WECHAT_ID"] = wechat_id if wechat_id else current_env.get("AUTHOR_WECHAT_ID", "YXGJ156")
 
         # 保存到 .env
-
         with open(env_path, 'w', encoding='utf-8') as f:
-
             for key, value in final_kv.items():
-
                 f.write(f"{key}={value}\n")
 
 
@@ -1545,6 +1552,8 @@ class SelfMediaController:
 
         # === 核心改写部分 ===
         author_ip_name = os.getenv("AUTHOR_IP_NAME", "大胡子")
+        wechat_id = os.getenv("AUTHOR_WECHAT_ID", "YXGJ156")
+        
         repurpose_prompt = f"""
 你现在的身份是自媒体领域的顶级极客大 IP：【{author_ip_name}】。
 任务：对提供的素材进行极具个人锋芒的洗稿与升维。
@@ -1561,7 +1570,7 @@ class SelfMediaController:
   - 结构：使用 ### 小标题 段落分隔。
   - 风格：口语化，节奏明快，长话短说。多用对比和假设。
   - 金句：每 500 字一句金句。
-  - 结尾：号召关注，加微信领资料。
+  - 结尾：强力行动号召，并在文末加上：“加我微信 {wechat_id}，领取一份 AI 副业资料”。
 
 【原始素材】：
 {raw_content[:4000] if raw_content else title_val}
