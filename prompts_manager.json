@@ -11,7 +11,7 @@
     },
     "news": {
       "name": "新闻/热点追踪型",
-      "prompt": "你现在的身份是敏锐的新媒体评论员：【{author_ip_name}】。\n原文是一个爆款热点，你需要输出基于事实的第二落点分析。\n\n⚠️ 核心准则：\n1. 尊重事实：不传播谣言。所有事实基础必须源自原文素材。\n2. 观点独到：不复述新闻，只输出你的态度。告诉读者：为什么这个事儿跟他们有关？\n\n📋 输出结构：\n## 第一部分：【爆款短视频脚本】\n- 抛出最扎眼的一个事实点，迅速给出评论。\n## 第二部分：【深度长文（正文）】\n- 标题：紧跟热点，带出争议性或洞察性观点。\n- 开篇：hi，我是{author_ip_name}。大家都在关注原文里的XX，但我只看到了一点...\n- 风格：快节奏、锐利、有爆发力。\n- 结构：使用 ### 表面假象、### 真相内核、### 大家的出路。"
+      "prompt": "你现在的身份是敏锐的新媒体评论员：【{author_ip_name}】。\n原文是一个爆款热点，你需要输出基于事实的第二落点分析。\n\n⚠️ 核心准则：\n1. 尊重事实：不传播谣言。所有事实基础必须源自原文素材。\n2. 观点独到：不复述新闻，只输出你的态度。告诉读者：为什么这个事儿跟他们有关？\n\n📋 输出结构：\n## 第一部分：【爆款短视频脚本】\n- 抛出最扎眼的一个事实点，迅速给出评论。\n## 第二部分：【深度长文（正文）】\n- 标题：紧跟热点，带出争议性或洞察性观点。\n- 开篇：hi，我是{author_ip_name}。大家都在关注原文里的XX，但我只看到了一点...\n- 风格：快节奏、锐利、有爆发力。\n- 结构：使用 ### 表面假象、### 真放内核、### 大家的出路。"
     },
     "emotional": {
       "name": "情感共鸣/生活态度型",
@@ -32,6 +32,36 @@
     "crossover": {
       "name": "跨界知识碰撞型",
       "prompt": "你现在的身份是全栈跨界IP：【{author_ip_name}】。\n任务是将原文这一单一学科/领域的知识，关联到读者的生意、生存或当下热点中去。"
+    }
+  },
+  "visual_config": {
+    "base_principles": [
+      "绝对严禁生成英文 (NO ENGLISH/LATIN LETTERS)",
+      "仅允许清晰的简体中文 (CHINESE ONLY)",
+      "留白美学：保持 40-60% 呼吸感",
+      "去真人化：优先使用 3D 符号、几何体或扁平插画",
+      "比例锁定：封面 2.35:1，插图 1:1 或 16:9"
+    ],
+    "cover_5_dimensions": {
+      "type": ["conceptual", "hero", "minimal", "metaphor"],
+      "palette": ["warm", "elegant", "cool", "dark", "vivid", "mono"],
+      "rendering": ["flat-vector", "3d-render", "painterly", "blueprint"],
+      "text": "title-only",
+      "mood": "balanced"
+    },
+    "illustrator_types": {
+      "infographic": "数据/指标/技术细节可视化",
+      "flowchart": "步骤/流程可视化",
+      "framework": "架构/系统模型可视化",
+      "scene": "情节/情绪/抽象概念可视化"
+    },
+    "style_matching": {
+      "hardcore": { "rendering": "blueprint", "palette": "cool", "mood": "bold" },
+      "insight": { "rendering": "3d-render", "palette": "elegant", "mood": "subtle" },
+      "news": { "rendering": "flat-vector", "palette": "vivid", "mood": "bold" },
+      "emotional": { "rendering": "painterly", "palette": "warm", "mood": "balanced" },
+      "tool": { "rendering": "3d-render", "palette": "vivid", "mood": "bold" },
+      "growth": { "rendering": "flat-vector", "palette": "pastel", "mood": "subtle" }
     }
   }
 }

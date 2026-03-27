@@ -529,12 +529,12 @@ class SelfMediaController:
             # 🚀 强制同步为用户提供的最新 API 规范 (Seedream 4.5)
             data = {
                 "model": "doubao-seedream-4-5-251128",
-                "prompt": prompt,
-                "size": "2K",
+                "prompt": prompt, # Prompt is now expected to be Chinese
+                "size": size,
                 "response_format": "url",
                 "sequential_image_generation": "disabled",
                 "stream": False,
-                "watermark": True
+                "watermark": False # Ensure watermark is always False
             }
             try:
                 print(f"[视觉工程] 正在通过 Ark 调用火山引擎(Seedream 4.5/2.0) 渲染 {size} 比例资产...")
@@ -573,47 +573,134 @@ class SelfMediaController:
         except Exception: pass
         return None
 
-    def analyze_visuals(self, article_content):
-        """专业视觉设计：基于宝玉老师的 5 维度 (Type, Palette, Rendering, Text, Mood) 模型"""
+    def load_visual_config(self):
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), 'prompts_manager.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f).get('visual_config', {})
+        except Exception: pass
+        return {}
+
+    def analyze_visuals(self, article_content, category="insight"):
         import httpx
         api_key = os.getenv("OPENAI_API_KEY")
         api_base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         if not api_key: return None
         
-        system_prompt = """你是一个顶级的自媒体内容视觉总监。
-你的任务是为一篇高质量深度文章设计核心封面。
+        v_config = self.load_visual_config()
+        # 准则和风格完全对齐 prompts_manager.json
+        rules_text = "\n".join([f"- {r}" for r in v_config.get('base_principles', [])])
+        style_match = v_config.get('style_matching', {}).get(category, {
+            "rendering": "3d-render", "palette": "elegant", "mood": "balanced"
+        })
 
-设计规则（宝玉风格）：
-1. 关键词提取：分析内容，提取文中最具代表性的 3 个具象事物。
-2. 五维解析：
-   - Type (封面类型): hero (核心主角), conceptual (概念化设计), typography (排版优先), metaphor (隐喻构思), scene (叙事场景)
-   - Palette (配色方案): elegant (高级灰/金), mono (黑白单色), retro (复古工业), vivid (明亮现代)
-   - Rendering (渲染风格): flat-vector (扁平化矢量), digital (数字艺术), hand-drawn (手感绘图)
-   - Layout (布局偏好): 40-60%留白，核心元素偏置，极具呼吸感。
+        # 视觉导演指令：动态拼装，拒绝硬编码
+        sys_p = f"""你是一个视觉分析专家。请为分类为 '{category}' 的自媒体文章规划视觉方案。
 
-输出要求：
-1. 生图提示词必须是英文，包含构图细节（如 visual anchor, whitespace, simple silhouette）。
-2. 禁止生成具象的真人，优先使用符号、线条、或抽象图形。
+【核心设计红线】：
+{rules_text}
 
-输出 JSON 格式:
-{
-  "keywords": ["关键词1", "关键词2"],
-  "cover": {
-    "type": "hero", "palette": "elegant", "rendering": "flat-vector",
-    "prompt": "Highly detailed premium vector illustration for [keywords], minimal concept art, 40% empty space, aesthetic composition, visual anchor of [object], trending on Dribbble, 4k",
-    "rationale": "设计意图"
-  },
-  "images": [ {"prompt": "英文插图提示词", "position": "插入位置建议"} ]
-}"""
-        user_prompt = f"请为以下深度文章设计视觉方案，确封面能体现文章核心灵魂，不要泛泛而谈。文章片段：\n{article_content[:3000]}"
+【视觉风格指导 (基于分类匹配)】：
+- 渲染方案: {style_match.get('rendering')} | 色彩体系: {style_match.get('palette')} | 情绪基调: {style_match.get('mood')}
+
+任务：规划 1 张封面 (2.35:1) 和 2-3 张插图。提示词必须是全中文。
+
+输出 JSON 格式要求:
+{{
+  "cover": {{ "type": "hero/minimal", "prompt": "全中文生图词", "rendering": "{style_match.get('rendering')}" }},
+  "illustrations": [
+    {{
+      "prompt": "全中文插图生图提示词",
+      "type": "infographic/flowchart/scene",
+      "ratio": "16:9 / 4:3 / 1:1 / 3:4",
+      "pos": "对应段落"
+    }}
+  ]
+}}"""
         
         try:
             resp = httpx.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
                 json={
                     "model": "deepseek-chat", 
                     "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
+                        {"role": "system", "content": sys_p},
+                        {"role": "user", "content": f"内容：{article_content[:3000]}"}
+                    ], 
+                    "response_format": {"type": "json_object"}}, 
+                timeout=60)
+            return json.loads(resp.json()["choices"][0]["message"]["content"])
+        except Exception as e: 
+            print(f"⚠️ 视觉分析异常: {e}")
+            return None
+
+    def download_image_file(self, url, folder=None):
+        if not folder:
+            folder = os.path.join(self.workspace, 'assets', datetime.now().strftime('%Y-%m-%d'))
+        os.makedirs(folder, exist_ok=True)
+        try:
+            filename = f"gen_{datetime.now().strftime('%H%M%S')}.png"
+            filepath = os.path.join(folder, filename)
+            r = requests.get(url, timeout=30)
+            if r.status_code == 200:
+                with open(filepath, "wb") as f: f.write(r.content)
+                return filepath
+        except Exception: pass
+        return None
+
+    def load_visual_config(self):
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), 'prompts_manager.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f).get('visual_config', {})
+        except Exception: pass
+        return {}
+
+    def analyze_visuals(self, article_content, category="insight"):
+        import httpx
+        api_key = os.getenv("OPENAI_API_KEY")
+        api_base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        if not api_key: return None
+        
+        v_config = self.load_visual_config()
+        # 准则和风格完全对齐 prompts_manager.json
+        rules_text = "\n".join([f"- {r}" for r in v_config.get('base_principles', [])])
+        style_match = v_config.get('style_matching', {}).get(category, {
+            "rendering": "3d-render", "palette": "elegant", "mood": "balanced"
+        })
+
+        # 视觉导演指令：动态拼装，拒绝硬编码
+        sys_p = f"""你是一个视觉分析专家。请为分类为 '{category}' 的自媒体文章规划视觉方案。
+
+【核心设计红线】：
+{rules_text}
+
+【视觉风格指导 (基于分类匹配)】：
+- 渲染方案: {style_match.get('rendering')} | 色彩体系: {style_match.get('palette')} | 情绪基调: {style_match.get('mood')}
+
+任务：规划 1 张封面 (2.35:1) 和 2-3 张插图。提示词必须是全中文。
+
+输出 JSON 格式要求:
+{{
+  "cover": {{ "type": "hero/minimal", "prompt": "全中文生图词", "rendering": "{style_match.get('rendering')}" }},
+  "illustrations": [
+    {{
+      "prompt": "全中文插图生图提示词",
+      "type": "infographic/flowchart/scene",
+      "ratio": "16:9 / 4:3 / 1:1 / 3:4",
+      "pos": "对应段落"
+    }}
+  ]
+}}"""
+        
+        try:
+            resp = httpx.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "deepseek-chat", 
+                    "messages": [
+                        {"role": "system", "content": sys_p},
+                        {"role": "user", "content": f"内容：{article_content[:3000]}"}
                     ], 
                     "response_format": {"type": "json_object"}}, 
                 timeout=60)
@@ -655,7 +742,7 @@ class SelfMediaController:
         # 2. 生成封面
         cover_prompt = plan.get("cover", {}).get("prompt", "封面图")
         print(f"🖼️ 正在构思封面: {cover_prompt[:50]}...")
-        cover_url = self.generate_image(cover_prompt, model_type=model_type, size="1280*544")
+        cover_url = self.generate_image(cover_prompt, model_type=model_type, size="3072x1308")
         
         if cover_url:
             local_cover = self.download_image_file(cover_url, folder=os.path.join(self.workspace, 'assets', 'covers'))
@@ -684,8 +771,19 @@ class SelfMediaController:
                 style_context = plan.get("cover", {})
                 p = f"{p}, style: {style_context.get('rendering', 'flat-vector')}, palette: {style_context.get('palette', 'elegant')}, minimal, clean white background"
                 
-                print(f"🖼️ 正在生成插图 {i}: {p[:50]}...", flush=True)
-                img_url = self.generate_image(p, model_type=model_type, size="1024*1024")
+                # 动态比例计算逻辑：确保像素量 > 368.64万 (Seedream 4.5 硬门槛)
+                ratio_map = {
+                    "16:9": "2560x1440",
+                    "4:3": "2224x1668",
+                    "1:1": "1920x1920",
+                    "3:4": "1668x2224",
+                    "2.35:1": "3072x1308"
+                }
+                target_ratio = img_info.get("ratio", "1:1")
+                target_size = ratio_map.get(target_ratio, "1920x1920")
+
+                print(f"🖼️ 正在生成插图 {i} (比例 {target_ratio}): {p[:50]}...", flush=True)
+                img_url = self.generate_image(p, model_type=model_type, size=target_size)
                 
                 if img_url:
                     local_path = self.download_image_file(img_url, folder=os.path.join(self.workspace, 'assets', 'illustrations'))
