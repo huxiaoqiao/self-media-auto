@@ -12,6 +12,7 @@
 
 import argparse
 import sys
+import subprocess
 import os
 import json
 import io
@@ -804,6 +805,61 @@ class SelfMediaController:
             
         print(f"\n[FEISHU_STATUS] DONE=已产出 {len(state.get('article_images', []))} 张图", flush=True)
         return True
+
+    def post_to_wechat(self, draft_file, method="api", cover_path=None, title=None):
+        print("\n🚀 正在将内容同步至公众号草稿箱...", flush=True)
+        state = self.load_state()
+        article_images = state.get('article_images', [])
+        
+        try:
+            with open(draft_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Insert images evenly among H3 headings or blank lines
+            if article_images and "![插图]" not in content:
+                lines = content.split('\n')
+                insert_points = [i for i, line in enumerate(lines) if line.startswith('### ')]
+                if len(insert_points) < len(article_images):
+                    # fallback to double newlines if not enough headings
+                    insert_points = [i for i, line in enumerate(lines) if line.strip() == '']
+                
+                # Deduplicate and sort points
+                insert_points = sorted(list(set(insert_points)))
+                
+                if insert_points:
+                    for img_idx, img_path in enumerate(article_images):
+                        pt_idx = (img_idx * len(insert_points)) // len(article_images)
+                        if pt_idx < len(insert_points):
+                            line_idx = insert_points[pt_idx] + img_idx * 2 # offset for previous insertions
+                            lines.insert(line_idx, f'\n![插图]({os.path.abspath(img_path)})\n')
+                    
+                    content = '\n'.join(lines)
+                    with open(draft_file, 'w', encoding='utf-8') as f:
+                        f.write(content)
+
+            # Build script arguments
+            npx_cmd = "npx.cmd" if os.name == "nt" else "npx"
+            baoyu_dir = os.path.join(self.workspace, "baoyu-post-to-wechat")
+            if method == "browser":
+                script_path = os.path.join(baoyu_dir, "scripts", "wechat-article.ts")
+                script_args = [npx_cmd, "-y", "bun", script_path, "--markdown", draft_file, "--theme", "default"]
+            else:
+                script_path = os.path.join(baoyu_dir, "scripts", "wechat-api.ts")
+                script_args = [npx_cmd, "-y", "bun", script_path, draft_file, "--theme", "default"]
+                
+            if cover_path and os.path.exists(cover_path):
+                script_args.extend(["--cover", os.path.abspath(cover_path)])
+            if title:
+                script_args.extend(["--title", title])
+                
+            proc = subprocess.Popen(script_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+            for line in proc.stdout:
+                print(line, end='', flush=True)
+            proc.wait()
+            return proc.returncode == 0
+        except Exception as e:
+            print(f"[ERROR] post_to_wechat error: {e}", flush=True)
+            return False
 
     def run_post(self, method="api"):
         state = self.load_state()
