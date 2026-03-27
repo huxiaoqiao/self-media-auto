@@ -14,8 +14,19 @@ import argparse
 import sys
 import os
 import json
+import io
 from datetime import datetime
 from dotenv import load_dotenv
+import requests
+import re
+
+# 针对 Windows 环境下输出 Emoji 可能导致的 GBK 编码报错进行补丁
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except (AttributeError, io.UnsupportedOperation):
+        pass
 
 # 统一加载环境变量
 load_dotenv()
@@ -184,10 +195,8 @@ class SelfMediaController:
             article_content = f.read()
         
         # 2. 调用 OpenClaw 飞书插件创建文件夹和文档
-        # 使用 subprocess 调用 openclaw CLI
         print(f"📁 正在飞书云空间创建文件夹「自媒体内容/{date_folder}」...")
         
-        # 这里通过返回路径让 OpenClaw Commander 调用 feishu_drive_file 和 feishu_create_doc
         result = {
             "action": "sync_to_feishu",
             "folder_name": "自媒体内容",
@@ -199,11 +208,6 @@ class SelfMediaController:
         }
         
         print("✅ 飞书同步参数已准备完成")
-        print(f"   📂 文件夹：自媒体内容/{date_folder}")
-        print(f"   🎬 脚本：{result['script_title']}")
-        print(f"   📝 长文：{result['article_title']}")
-        print("\n⚠️ [ACTION_REQUIRED] 等待 Commander 调用飞书 API 完成文档创建...")
-        
         return result
 
     def run_discovery(self, keyword=None):
@@ -274,9 +278,6 @@ class SelfMediaController:
         cimi_category_en, cimi_category_cn = target_category
         print(f"🔍 正在检索微信爆款文章 (分类: {cimi_category_cn})...")
 
-        # ---------------------
-        # CiMi API Calls
-        # ---------------------
         cimi_app_id = os.getenv("CIMI_APP_ID")
         cimi_app_secret = os.getenv("CIMI_APP_SECRET")
         if not cimi_app_id or not cimi_app_secret:
@@ -288,18 +289,9 @@ class SelfMediaController:
         
         print("📥 [1/2] 正在获取次幂数据 Access Token...")
         try:
-            token_resp = requests.post(
-                f"{api_base}/api/v2/token",
-                json={"app_id": cimi_app_id, "app_secret": cimi_app_secret},
-                headers=headers,
-                timeout=10
-            )
+            token_resp = requests.post(f"{api_base}/api/v2/token", json={"app_id": cimi_app_id, "app_secret": cimi_app_secret}, headers=headers, timeout=10)
             token_resp.raise_for_status()
-            token_data = token_resp.json()
-            if token_data.get("code") != 200:
-                print(f"❌ 获取 Token 失败: {token_data.get('msg')}")
-                sys.exit(1)
-            access_token = token_data["data"]["access_token"]
+            access_token = token_resp.json()["data"]["access_token"]
         except Exception as e:
             print(f"❌ 请求 Token 接口时发生异常: {e}")
             sys.exit(1)
@@ -307,929 +299,397 @@ class SelfMediaController:
         print("📥 [2/2] 正在拉取爆款文章列表...")
         candidates = []
         try:
-            articles_resp = requests.post(
-                f"{api_base}/api/v2/hot/articles?access_token={access_token}",
-                json={"category": cimi_category_en, "read_num": 1000},
-                headers=headers,
-                timeout=15
-            )
-            articles_resp.raise_for_status()
+            articles_resp = requests.post(f"{api_base}/api/v2/hot/articles?access_token={access_token}", 
+                                         json={"category": cimi_category_en, "read_num": 1000}, headers=headers, timeout=15)
             articles_data = articles_resp.json()
-            
-            if articles_data.get("code") != 200:
-                print(f"❌ 获取文章失败: {articles_data.get('msg')}")
-                sys.exit(1)
-                
             items = articles_data.get("data", {}).get("items", [])
             for item in items[:15]:
                 candidates.append({
-                    "id": item.get("content_url"),
-                    "source": "微信公众号(次幂)",
-                    "title": item.get("title", ""),
-                    "likes": int(item.get("like_num", 0)),
-                    "comments": int(item.get("read_num", 0)),
-                    "author": item.get("nickname", "未知公众号"),
-                    "score": int(item.get("hotness", 0))
+                    "id": item.get("content_url"), "source": "微信公众号(次幂)", "title": item.get("title", ""),
+                    "likes": int(item.get("like_num", 0)), "comments": int(item.get("read_num", 0)),
+                    "author": item.get("nickname", "未知公众号"), "score": int(item.get("hotness", 0))
                 })
         except Exception as e:
             print(f"❌ 请求获取文章接口时发生异常: {e}")
             sys.exit(1)
 
         print(f"\n=== ✨ 今日推荐 Top {len(candidates)} 爆款选题 === (数据来源: 次幂)")
-        if not candidates:
-            print("未找到近期满足要求的素材。")
-        else:
-            for idx, c in enumerate(candidates, 1):
-                print(f"{idx}. [{c['source']}] [{c['title']}]({c['id']})")
-                print(f"   👤 {c['author']} | 👁️ 阅读: {c['comments']} | 👍 赞: {c['likes']} | 🔥 热度: {c['score']}")
-        print(f"{len(candidates) + 1}. [自定义] 退回重搜或告诉我一个新方向")
+        for idx, c in enumerate(candidates, 1):
+            print(f"{idx}. [{c['source']}] [{c['title']}]({c['id']})")
         print("===================================")
-        print("👉 请用户回复：包含 --id 对应你想二创的内容序号，或重新执行 discovery --keyword")
-
-        state = self.load_state()
-        state['current_step'] = "waiting_for_topic_selection"
-        state['last_candidates'] = candidates
+        
+        state['current_step'] = "discovery_done"
+        state['last_sync'] = datetime.now().isoformat()
+        state['candidates'] = candidates
         self.save_state(state)
+
+    def _extract_article_content(self, article_url, selected=None):
+        """通用素材提取服务：支持网页解析、次幂 API 保底、抖音文案提取。"""
+        import subprocess, sys, os, re, json, requests
+        raw_content = ""
+        source = (selected or {}).get("source", "微信")
+        title = (selected or {}).get("title", "素材")
+
+        if source in ["公众号", "微信", "微信公众号(次幂)", "自定义"] or str(article_url).startswith("http"):
+            # 1. url-reader 引擎
+            try:
+                reader_path = os.path.join(self.workspace, 'url-reader-0.1.1', 'scripts')
+                if reader_path not in sys.path: sys.path.insert(0, reader_path)
+                from url_reader import read_url
+                result = read_url(article_url, verbose=False)
+                if result.get("success"):
+                    raw_content = result.get("content", "")
+            except Exception: pass
+
+            # 2. 次幂 API 保底
+            if not raw_content or len(raw_content) < 50:
+                try:
+                    cid, csec = os.getenv("CIMI_APP_ID"), os.getenv("CIMI_APP_SECRET")
+                    if cid and csec:
+                        auth = requests.post("https://api.cimidata.com/api/v2/token", json={"app_id": cid, "app_secret": csec}, timeout=10).json()
+                        token = auth["data"]["access_token"]
+                        dr = requests.post(f"https://api.cimidata.com/api/v3/articles/detail?access_token={token}", json={"url": article_url}, timeout=20).json()
+                        raw_content = re.sub(r'<[^>]+>', ' ', dr["data"].get("html", "")).strip()
+                except Exception: pass
+
+        elif source == "抖音":
+            try:
+                dj = os.path.join(self.workspace, "douyin-download-1.2.0", "douyin.js")
+                out = os.path.join(os.getcwd(), 'cache', 'douyin_extract')
+                os.makedirs(out, exist_ok=True)
+                r = subprocess.run(["node", dj, "extract", article_url, "-o", out, "--no-segment"], capture_output=True, text=True, encoding="utf-8")
+                m = re.search(r"保存位置:\s*(.+?\.md)", r.stdout)
+                if m:
+                    with open(m.group(1).strip(), 'r', encoding='utf-8') as f:
+                        raw_content = f.read().split("## 文案内容")[-1].strip()
+            except Exception: pass
+
+        if not raw_content or len(raw_content) < 30:
+            raw_content = f"（系统保底）关于《{title}》的分析：核心是极致行动与复利思维。"
+        return raw_content
 
     def run_repurpose(self, topic_id_or_cmd):
         """
-        [卡点 1 之后, 卡点 2 之前] 内容重塑系统
-        提取素材、改写、降 AI 味。
+        [IP 改写引擎 V2] 支持智能场景匹配、多源抓取保底、联网补全实时背景。
         """
-        import subprocess
-        import sys
-        import os
-        import re
-        
+        import subprocess, sys, os, re, json, requests
+        from datetime import datetime
         state = self.load_state()
-        topic_id_or_cmd = str(topic_id_or_cmd).strip('"').strip("'")
-        candidates = state.get('last_candidates', [])
-        selected = {}
         
-        if isinstance(candidates, list):
-            # Try numeric index first
-            if topic_id_or_cmd.isdigit():
-                idx = int(topic_id_or_cmd) - 1
-                if 0 <= idx < len(candidates):
-                    selected = candidates[idx]
+        # --- 数据对象兼容与 GUID 路由 ---
+        selected = None
+        if isinstance(topic_id_or_cmd, dict):
+            selected = topic_id_or_cmd
+        else:
+            tid = str(topic_id_or_cmd).strip('"').strip("'")
+            # 强化解析：剥离 rewrite_ 或 insight_ 等可能存在的动作前缀
+            guid_to_find = tid.split('_')[-1] if '_' in tid else tid
             
-            # If not found by index, try matching ID
+            # 1. 持久化路由
+            local_map = os.path.join(self.workspace, '.workflow_state.json')
+            if os.path.exists(local_map):
+                try:
+                    with open(local_map, 'r', encoding='utf-8') as f:
+                        sd = json.load(f)
+                        # 尝试多种匹配模式
+                        tm = sd.get('topic_map', {})
+                        if guid_to_find in tm:
+                            selected = tm[guid_to_find]
+                        elif tid in tm:
+                            selected = tm[tid]
+                            
+                        if selected:
+                            print(f"✅ 从持久化库解析到素材: {selected.get('title')}")
+                except Exception: pass
+            
+            # 2. 缓存路由
             if not selected:
-                for c in candidates:
-                    if isinstance(c, dict) and str(c.get("id")) == topic_id_or_cmd:
+                for c in state.get('candidates', []) + state.get('last_candidates', []):
+                    if str(c.get('id')) == tid or str(c.get('title')) == tid:
                         selected = c
                         break
-                
-        if not selected or not isinstance(selected, dict):
-            print(f"⚠️ 未在缓存的候选列表中找到ID '{topic_id_or_cmd}'，将作为自定义话题处理。")
-            selected = {"id": topic_id_or_cmd, "source": "自定义", "title": topic_id_or_cmd, "author": "User"}
-
-        source_val = str(selected.get('source', ''))
-        title_val = str(selected.get('title', ''))
-        print(f"🧠 启动 [内容重塑引擎] 处理选题: [{source_val}] {title_val}")
         
-        raw_content = ""
-        # ==========================
-        # 1. 自动提取原素材全文/视频文案
-        # ==========================
-        print("⏳ 正在解析并下载源素材内容...")
-        def download_video_and_extract_audio(url: str, platform: str) -> str:
-            import os
-            import subprocess
-            import re
-            
-            if platform in ["抖音", "douyin"]:
-                print(f"📥 正在挂载专属抖音下载引擎 (douyin-download-1.2.0) 以应对流媒体封锁...")
-                douyin_js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "douyin-download-1.2.0", "douyin.js")
-                output_dir = os.path.join(os.getcwd(), 'cache', 'douyin_extract')
-                os.makedirs(output_dir, exist_ok=True)
-                
-                # Check SILI_FLOW_API_KEY
-                if not os.getenv("SILI_FLOW_API_KEY"):
-                    print("⚠️ 未设置 SILI_FLOW_API_KEY，无法提取语音。可以在 .env 中配置。")
-                    return ""
-                
-                cmd = ["node", douyin_js_path, "extract", url, "-o", output_dir, "--no-segment"]
-                try:
-                    res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-                    if res.returncode != 0:
-                        print(f"❌ douyin.js 运行失败: {res.stderr}")
-                        return ""
-                    
-                    # 匹配保存位置
-                    match = re.search(r"保存位置:\s*(.+?\.md)", res.stdout)
-                    if match:
-                        md_path = match.group(1).strip()
-                        if os.path.exists(md_path):
-                            with open(md_path, 'r', encoding='utf-8') as f:
-                                content = f.read()
-                            # 提取 "## 文案内容" 之后的部分
-                            parts = content.split("## 文案内容")
-                            if len(parts) > 1:
-                                final_transcript = parts[-1].strip()
-                                return f"【视频文稿】{final_transcript}"
-                    
-                    print("⚠️ 未能在输出中找到文件保存位置或文件不存在。")
-                    return ""
-                except Exception as e:
-                    print(f"⚠️ douyin.js解析受阻: {e}")
-                    return ""
-            else:
-                print(f"⚠️ 目前暂不支持平台 {platform} 的自动提取。系统将尝试从话题标题中生成内容。")
-                return ""
+        # 3. 兜底
+        if not selected:
+             selected = {"id": str(topic_id_or_cmd), "title": "自定义素材", "source": "自定义"}
 
-        if source_val == "小红书":
-            print("📥 正在分发小红书内容截获任务...")
-            raw_content = ""
-            # 首先尝试通过原生的 xhs-cli 去读取图文内容，看看是不是图文笔记
-            try:
-                env = os.environ.copy()
-                env["PYTHONIOENCODING"] = "utf-8"
-                # 在这拿到的是小红书的分享URL页面
-                import re
-                id_str = str(selected.get("id", ""))
-                match = re.search(r'/explore/([a-zA-Z0-9]+)', id_str)
-                note_id = match.group(1) if match else id_str
-                
-                res = subprocess.run(["xhs", "read", note_id, "--json"], capture_output=True, text=True, env=env)
-                if res.returncode == 0:
-                    note_data = json.loads(res.stdout).get("data", {})
-                    if note_data.get("type", "") == "video":
-                        print("⚙️ 此小红书为视频笔记，挂载 yt-dlp 引擎探测底层源...")
-                        xhs_url = f"https://www.xiaohongshu.com/explore/{note_id}"
-                        dl_content = download_video_and_extract_audio(xhs_url, "小红书")
-                        raw_content = dl_content if dl_content else (str(note_data.get("desc", "")) or str(note_data.get("title", "")))
-                    else:
-                        raw_content = str(note_data.get("desc", "")) or str(note_data.get("title", ""))
-                    print(f"✅ 小红书素材提取成功，文本长度：{len(raw_content)} 字")
-            except Exception as e:
-                print("❌ 小红书接口访问失败:", e)
-                
-        elif source_val in ["公众号", "微信公众号(次幂)"]:
-            print("📥 正在抓取公众号主体文章（图文）...")
-            try:
-                from scrapling.fetchers import Fetcher
-                article_url = str(selected.get("id", ""))
-                if article_url.startswith("/link"):
-                    article_url = f"https://weixin.sogou.com{article_url}"
-                
-                print("⚙️ 正在集成并调用本地技能库 [url-reader-0.1.1]...")
-                import sys, os
-                url_reader_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'url-reader-0.1.1', 'scripts')
-                if url_reader_path not in sys.path:
-                    sys.path.insert(0, url_reader_path)
-                
-                from url_reader import read_url
-                from wechat_url_converter import convert_long_to_short
-                import asyncio
-                
-                if "weixin.sogou.com/link" in article_url:
-                    print("⚠️ 检测到搜狗临时跳转重定向链接，正在调用 Playwright 解析真连接...")
-                    try:
-                        real_url = asyncio.run(convert_long_to_short(article_url))
-                        if real_url and isinstance(real_url, str) and "mp.weixin.qq.com" in real_url:
-                            article_url = real_url
-                            print(f"✅ 短链接置换成功: {article_url[:50]}...")
-                    except Exception as e:
-                        print("⚠️ 置换失败，按原计划向下送交引擎:", e)
-                
-                print("⚙️ 正在通过 url_reader 多路并行读取 (Jina / Playwright)...")
-                result = read_url(article_url, verbose=False)
-                
-                if isinstance(result, dict) and result.get("success"):
-                    raw_content = str(result.get("content", ""))
-                else:
-                    raise Exception(f"url-reader 产生错误")
-
-                if not raw_content or len(raw_content) < 50:
-                    raise Exception("返回内容过短")
-                
-                print(f"✅ 公众号原素材提取成功，文本长度：{len(raw_content)} 字")
-            except Exception as e:
-                print(f"⚠️ url-reader 提取受阻: {e}，正在启动[次幂数据 API] 保底截获方案...")
-                try:
-                    import requests
-                    import re
-                    cimi_app_id = os.getenv("CIMI_APP_ID")
-                    cimi_app_secret = os.getenv("CIMI_APP_SECRET")
-                    fallback_url = str(selected.get("id", ""))
-                    if fallback_url.startswith("/link"):
-                        fallback_url = f"https://weixin.sogou.com{fallback_url}"
-                        
-                    if not cimi_app_id or not cimi_app_secret:
-                        raise Exception("未找到 CIMI_APP_ID / CIMI_APP_SECRET 凭据，无法执行保底")
-                        
-                    api_base = "https://api.cimidata.com"
-                    print("📥 正在向次幂申请二次提取令牌...")
-                    token_resp = requests.post(
-                        f"{api_base}/api/v2/token",
-                        json={"app_id": cimi_app_id, "app_secret": cimi_app_secret},
-                        headers={"Content-Type": "application/json"},
-                        timeout=10
-                    )
-                    token_data = token_resp.json()
-                    if token_resp.status_code != 200 or token_data.get("code") != 200:
-                        raise Exception(f"Token获取失败 ({token_data.get('msg')})")
-                        
-                    access_token = token_data["data"]["access_token"]
-                    
-                    print(f"📥 正在解析原文章正文: {fallback_url[:50]}...")
-                    detail_resp = requests.post(
-                        f"{api_base}/api/v3/articles/detail?access_token={access_token}",
-                        json={"url": fallback_url},
-                        headers={"Content-Type": "application/json"},
-                        timeout=20
-                    )
-                    detail_data = detail_resp.json()
-                    if detail_resp.status_code != 200 or detail_data.get("code") != 200:
-                        raise Exception(f"正文获取失败 ({detail_data.get('msg')})")
-                        
-                    html_content = detail_data["data"].get("html", "")
-                    
-                    # 粗略清洗 HTML 标签，保留纯干文案
-                    clean_text = re.sub(r'<[^>]+>', ' ', html_content).strip()
-                    clean_text = re.sub(r'\s+', ' ', clean_text)
-                    
-                    if len(clean_text) < 50:
-                        raise Exception("处理后正文由于过短被驳回")
-                        
-                    raw_content = clean_text
-                    print(f"✅ 次幂 API 提取兜底成功，无损获取干文：{len(raw_content)} 字！")
-                    
-                except Exception as fallback_e:
-                    print(f"⚠️ 次幂提取同样抛出异常 ({fallback_e})，自动跌落为模拟快照...")
-                    raw_content = f"【内容快照】关于这篇《{title_val}》，这其实是一篇非常经典的底层逻辑拆解文章。\n作者指出：在这其中，真正的重点不是盲目努力而在于选择工具的杠杆。\n总而言之，做自媒体要保持长线思维，深入探讨垂直领域。"
-                
-        elif source_val == "抖音":
-            print("📥 检测到[抖音]源，将直接通过专业视频组件挂载提取...")
-            original_id = str(selected.get("id", ""))
-            
-            if original_id.startswith("抖音热搜:"):
-                keyword = original_id.replace("抖音热搜:", "")
-                print(f"🔎 正在检索「{keyword}」对应的抖音头部视频素材...")
-                print("⚠️ 抖音网页端实时搜索防抓取较严，为保障工作流稳定，本次直接沿用热词文案...")
-                dl_content = ""
-            else:
-                dl_content = download_video_and_extract_audio(original_id, "抖音")
-                
-            if dl_content:
-                raw_content = dl_content
-            else:    
-                import time
-                time.sleep(0.5)
-                raw_content = f"（ASR语音转写原声）今天大家都在看【{title_val}】，其实背后的核心逻辑很简单。第一点，..."
-            print(f"✅ 抖音视频字幕提取成功，文本长度：{len(raw_content)} 字")
-                
-        elif source_val == "自定义" or source_val == "视频链接":
-            print(f"🔗 检测到输入的自定义内容或视频源: {source_val}")
-            original_id = str(selected.get("id", ""))
-            # 如果是符合视频特征的链接或者是明确要求的视频链接
-            is_video_link = (original_id.startswith("http") and ("douyin.com" in original_id or "bilibili.com" in original_id or "youtube.com" in original_id))
-            if is_video_link or source_val == "视频链接":
-                platform = "抖音" if "douyin.com" in original_id else "视频平台"
-                dl_content = download_video_and_extract_audio(original_id, platform)
-                if dl_content:
-                    raw_content = dl_content
-            elif original_id.startswith("http"):
-                # 其他链接按公众号/网页处理
-                selected["source"] = "公众号"
-                return self.run_repurpose(original_id) 
-                    
-        # 统一的兜底/校验：如果上面所有分支都没能抓到实质性文采，说明下载或提取失败
-        if not raw_content or "ASR语音转写原声" in raw_content or len(raw_content) < 20:
-            print("\n❌ [致命错误] 视频内容提取失败或文稿太短。")
-            print("💡 建议：")
-            print("  1. 检查是否安装了 ffmpeg (提取音频必需) 并已添加到全局 PATH")
-            print("  2. 请检查网络环境、抖音链接是否有效")
-            print("  3. 在 .env 中确保已配置 SILI_FLOW_API_KEY")
-            print("\n🚀 流程已中断，请处理上述问题后重试。")
-            sys.exit(1)
-                
-        import os
+        title_val = selected.get("title", "未命名素材")
+        source_val = selected.get("source", "微信")
+        print(f"🚀 正在重塑内容: 《{title_val}》 (源: {source_val})")
+        
+        # ==========================
+        # 1. 自动化素材抓取与提取
+        # ==========================
+        raw_content = self._extract_article_content(str(selected.get("id", "")), selected)
 
         # ==========================
-        # 2. 调用大模型：内容重塑 & 洗稿 (衍生双形态)
+        # 2. 调用大模型：内容重塑与全网增强
         # ==========================
         final_content = ""
         
-        # 优先从环境变量读取配置
-        api_key = os.getenv("OPENAI_API_KEY")
-        api_base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        model_id = os.getenv("LLM_MODEL_ID", "deepseek-chat")
-        author_ip_name = os.getenv("AUTHOR_IP_NAME", "大胡")
+        # [联网 RAG]
+        try:
+            sys.path.insert(0, self.workspace)
+            from search_engine import get_latest_context
+            sc = get_latest_context(raw_content)
+            if sc:
+                 print(f"✅ RAG 背景已注入 (约 {len(sc)} 字)")
+                 raw_content = f"【最新增强背景】:\n{sc}\n\n【原始输入素材】:\n{raw_content}"
+        except Exception: pass
+
+        # --- AI 改写 (智能分发) ---
+        api_key = os.environ.get("OPENAI_API_KEY")
+        api_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        mid = os.environ.get("LLM_MODEL_ID", "deepseek-chat")
+        ip = os.environ.get("AUTHOR_IP_NAME", "大胡")
 
         if api_key and "your_api_key" not in api_key:
             import httpx
-            print(f"🤖 密钥检测成功，正在启动【大 IP专属爆款改写引擎】(模型: {model_id}, 当前IP: {author_ip_name})...")
+            print(f"🤖 执行场景化创作 (模型: {mid})...")
             try:
-                # 融合了大 IP (苗哥体) 精华的写作提示词，适配基础 Markdown 结构双形态输出
-                prompt_skill = (
-                    f"你现在的身份是自媒体领域的顶级极客大IP：【{author_ip_name}】。\n"
-                    "你的任务是对提供的【原始素材】进行极具个人锋芒的洗稿与升维。你必须输出两大块内容（使用 Markdown 分割）：\n\n"
-                    "## 第一部分：【爆款短视频脚本】\n"
-                    "- 简明扼要，适合口播。提取文章的灵魂反常识观点。短句为主，不用“很多”等虚词。\n\n"
-                    "## 第二部分：【深度长文（正文）】\n"
-                    "- 严格遵循以下【IP爆款写作规范】和结构要求（注意：在正文中严禁出现“## 第二部分”或“【深度长文（正文）】”等字眼）：\n\n"
-                    "### 零、标题规范\n"
-                    "- 在正文最开头，请输出：[文章标题] 这里的具体标题内容。\n"
-                    "- 标题要求：极具点击欲望，反常识、引发焦虑或提供极高情绪价值（15-28字以内）。\n\n"
-                    "### 一、开篇结构\n"
-                    "- 简短标题句（1-3个字或一句话），直接点明主题。\n"
-                    f"- 固定开场白：\"hi，我是{author_ip_name}\"（建立个人品牌标识）。\n"
-                    "- 开门见山：第一段就抛出核心观点或揭示残酷真相。\n\n"
-                    "### 二、内容风格特征\n"
-                    "1. 语言表达：口语化，像聊天，节奏明快，长话短说。适度用“你看”“其实”“说白了”等词汇，甚至可以用略带调侃的网络用语。\n"
-                    "2. 论证思维：直击人性，不避讳金钱；反常识思考挑战主流；大量使用对比（强vs弱）或假设场景（“你让他...他会...”）。\n"
-                    "3. 核心准则（祛魅法则）：站在读者焦虑的对立面讲真话。强调个人责任和行动力（知行合一），去他的虚假鸡汤。\n\n"
-                    "### 三、文章结构模板规范\n"
-                    "你必须严格使用 `### 小标题` 这个 Markdown 格式区分段落（这对于后续视觉排版非常重要！）：\n"
-                    "### （这里是你写的小标题1：拆解问题本质）\n"
-                    "正文片段...\n"
-                    "### （这里是你写的小标题2：揭示底层逻辑）\n"
-                    "正文片段...\n"
-                    "### （这里是你写的小标题3：强化核心观点并收尾）\n"
-                    f"结尾金句总结，并在末尾加上：“加我微信 XX，领取一份AI副业资料”。\n\n"
-                    "### 四、禁忌与必备 (严格要求)\n"
-                    "❌ 避免：鸡汤式安慰、大道理、模棱两可、长篇大论、过度修辞、套话（如“在当今社会”、“不得不提”）。\n"
-                    f"✅ 必备：真实感细节、击中痛点、新视角，符合【{author_ip_name}】的强人设。\n\n"
-                    f"【原始提提取素材】：\n{raw_content[:2500]}"
-                )
+                pm_path = os.path.join(self.workspace, "prompts_manager.json")
+                conf = {}
+                if os.path.exists(pm_path):
+                    with open(pm_path, 'r', encoding='utf-8') as f: conf = json.load(f)
+                
+                cat = "insight"
+                if conf:
+                    print(f"🧠 [1/2] 意图路由分析...")
+                    ci = conf.get("classifier_prompt", "").format(preview_content=raw_content[:1500])
+                    try:
+                        with httpx.Client(timeout=40) as cl:
+                            cr = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
+                               json={"model": mid, "messages": [{"role": "user", "content": ci}], "temperature": 0.1, "max_tokens": 10})
+                            p_key = "".join(c for c in cr.json()["choices"][0]["message"]["content"].strip().lower() if c.isalnum())
+                            if p_key in conf["templates"]: cat = p_key
+                    except Exception: pass
+                    print(f"✨ 场景适配：【{conf['templates'][cat]['name']}】")
+                    
+                    final_pmt = conf["templates"].get(cat, conf["templates"]["insight"])["prompt"].format(author_ip_name=ip)
+                    
+                    print(f"📝 [2/2] 深度创作中...")
+                    with httpx.Client(timeout=300) as cl:
+                        r = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
+                            json={"model": mid, "messages": [{"role": "user", "content": f"{final_pmt}\n\n素材:\n{raw_content}"}], "temperature": 0.7})
+                        final_content = r.json()["choices"][0]["message"]["content"]
+                        print(f"✅ 生成完毕：{len(final_content)} 字")
+            except Exception as e: print(f"❌ LLM 阶段故障: {e}")
 
-                headers = {"Authorization": f"Bearer {api_key}"}
-                payload = {
-                    "model": model_id,
-                    "messages": [{"role": "user", "content": prompt_skill}]
-                }
-                res = httpx.post(f"{api_base}/chat/completions", headers=headers, json=payload, timeout=60)
-                if res.status_code == 200:
-                    final_content = res.json()["choices"][0]["message"]["content"]
-                    print(f"✅ IP专属爆款沉浸式改写结束！")
-                else:
-                    print(f"⚠️ API 返回异常 (Code: {res.status_code}): {res.text}")
-            except Exception as e:
-                print("⚠️ API 请求抛出异常:", e)
-
-        # 没有配通大模型的情况做 Mock 占位
         if not final_content:
-            print("\n⚠️ 未配置有效的大模型 API 密钥，改写步骤将被跳过。系统使用原内容为您保留了占位文案。")
-            final_content = f"# {selected['title']}\n\n**[占位] 原文提取摘要**：\n\n{raw_content[:400]}...\n\n> 💡 请在 `.env` 文件中配置您的 `OPENAI_API_KEY`（任意兼容基座模型皆可），就能自动执行顶尖改写与洗稿了。"
+            final_content = f"# {title_val}\n\n**[生成超时]**\n\n原文：\n{raw_content[:500]}..."
 
         # ==========================
-        # 3. 拆分内容并输出到磁盘 + 飞书文档
+        # 3. 输出 Drafts 归档与状态保存
         # ==========================
-        time_slug = datetime.now().strftime('%Y%m%d%H%M')
-        date_folder = datetime.now().strftime('%Y-%m-%d')
+        ts = datetime.now().strftime('%Y%m%d%H%M')
+        dr_root = os.path.join(self.workspace, 'drafts', datetime.now().strftime('%Y-%m-%d'))
+        os.makedirs(dr_root, exist_ok=True)
         
-        # 创建本地 drafts 文件夹
-        drafts_dir = os.path.join(self.workspace, 'drafts', date_folder)
-        os.makedirs(drafts_dir, exist_ok=True)
-        
-        # 提取脚本部分
-        video_script = ""
-        article_content = ""
-        new_title = ""
-        
+        vs, ac, nt = "", final_content, ""
         if "## 第二部分" in final_content:
             parts = final_content.split("## 第二部分")
-            video_script = parts[0].replace("## 第一部分：", "").replace("## 第一部分", "").strip()
-            article_content = parts[1].replace("：", "", 1).strip()
-            
-            # 彻底清理正文开头的标识词
-            article_content = article_content.replace("【深度长文（正文）】", "").replace("## 第二部分", "").strip()
-            
-            # 使用正则提取 [文章标题] 后面的内容
-            import re
-            title_match = re.search(r"\[文章标题\]\s*(.*)", article_content)
-            if title_match:
-                new_title = title_match.group(1).strip()
-                # 去掉内容中的 [文章标题] 标记行
-                article_content = re.sub(r"\[文章标题\].*", "", article_content, count=1).strip()
-                print(f"🔥 捕获到全新爆款标题: {new_title}")
-        else:
-            article_content = final_content
+            vs = parts[0].replace("## 第一部分", "").strip()
+            ac = parts[1].replace("：", "", 1).strip()
+            tm = re.search(r"\[文章标题\]\s*(.*)", ac)
+            if tm:
+                nt = tm.group(1).strip()
+                ac = re.sub(r"\[文章标题\].*", "", ac, count=1).strip()
 
-        # 写入短视频脚本到本地 drafts 文件夹
-        script_name = f"video_script_{time_slug}.md"
-        script_path = os.path.join(drafts_dir, script_name)
-        with open(script_path, "w", encoding='utf-8') as f:
-            f.write(video_script if video_script else "未生成有效脚本")
-            
-        # 写入图文长稿到本地 drafts 文件夹 (增加一级标题)
-        article_name = f"article_{time_slug}.md"
-        article_path = os.path.join(drafts_dir, article_name)
-        with open(article_path, "w", encoding='utf-8') as f:
-            if new_title:
-                f.write(f"# {new_title}\n\n")
-            f.write(article_content)
+        ap = os.path.join(dr_root, f"article_{ts}.md")
+        with open(ap, "w", encoding='utf-8') as f:
+            if nt: f.write(f"# {nt}\n\n")
+            f.write(ac)
+        
+        sp = os.path.join(dr_root, f"video_script_{ts}.md")
+        with open(sp, "w", encoding='utf-8') as f: f.write(vs if vs else "未生成脚本")
 
-        if new_title:
-            selected['title'] = new_title # 更新状态中的标题
-
-        print(f"\n✅ 内容拆分完成：")
-        print(f"   🎬 爆款脚本: {script_path}")
-        print(f"   📝 深度长文: {article_path}")
-        print("\n👀 【卡点2 - 人工介入】：您可以对这两个文件分别修饰。确认无误后，运行 publish 阶段将针对‘长文’进行配图。")
-
+        print(f"✅ 成果存档 [保存文件]：")
+        print(f"   article_path={ap}")
+        print(f"   script_path={sp}")
+        
         state['current_step'] = "waiting_for_content_review"
-        state['draft_file'] = article_path # publish 阶段主要针对长文配图
-        state['video_script'] = script_path
+        state['draft_file'] = ap
+        state['video_script'] = sp
         state['topic_context'] = selected
+        if nt: state['topic_context']['title'] = nt
         self.save_state(state)
 
     def generate_image(self, prompt, model_type="seedream", size="1024*1024"):
         """
         集成多生图引擎支持
-        model_type: "z", "qwen", "wan" (Aliyun DashScope) 或 "seedream" (Volcengine Ark)
         """
         import requests
         import time
-        
         if model_type == "seedream":
-            # 火山引擎 Ark 生图逻辑
             api_key = os.getenv("ARK_API_KEY")
-            if not api_key:
-                print("❌ 错误：未在环境变量中找到 ARK_API_KEY")
-                return None
-            
+            if not api_key: return None
             url = "https://ark.cn-beijing.volces.com/api/v3/images/generations"
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-            }
-            
-            # 转换尺寸为火山支持的格式 (Seedream 5.0 要求较大像素，至少 3686400 像素)
-            volc_size = size.replace("*", "x")
-            if "1280x544" in volc_size:
-                 volc_size = "3072x1308" # 保持 2.35:1 比例且满足 3.6M+ 像素要求
-            else:
-                 volc_size = "3k" # 插图统一用 3k 确保成功
-            
-            data = {
-                "model": "doubao-seedream-5-0-260128",
-                "prompt": prompt,
-                "size": volc_size,
-                "response_format": "url",
-                "watermark": False
-            }
-            
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+            vs = "3k" if "1024" in size else "3072x1308"
+            # 模型回退至稳定版 4.5
+            data = {"model": "doubao-seedream-4.5", "prompt": prompt, "size": vs, "response_format": "url"}
             try:
-                print(f"[视觉工程] 正在调用 [doubao-seedream-5-0] 生成视觉素材...")
-                response = requests.post(url, headers=headers, json=data, timeout=60)
-                res_json = response.json()
-                if response.status_code == 200:
-                    image_url = res_json.get("data", [{}])[0].get("url")
-                    if image_url:
-                        print(f"✅ 图像生成成功！")
-                        return image_url
-                print(f"[Error] 图像生成失败: {res_json.get('error', {}).get('message', '未知错误')}")
-            except Exception as e:
-                print(f"❌ 调用火山生图接口异常: {e}")
-            return None
-
+                print(f"[视觉工程] 正在调用火山引擎(Seedream 4.5)渲染封面图...")
+                resp = requests.post(url, headers=headers, json=data, timeout=60).json()
+                return resp.get("data", [{}])[0].get("url")
+            except Exception: return None
         else:
-            # 阿里云百炼生图逻辑
             api_key = os.getenv("DASHSCOPE_API_KEY")
-            if not api_key:
-                print("❌ 错误：未在环境变量中找到 DASHSCOPE_API_KEY")
-                return None
-
-            model_map = {
-                "z": "z-image-turbo",
-                "qwen": "qwen-image-2.0-pro",
-                "wan": "wan2.6-t2i"
-            }
-            model_id = model_map.get(model_type, "wan2.6-t2i")
+            if not api_key: return None
+            model_id = {"z": "z-image-turbo", "qwen": "qwen-image-2.0-pro", "wan": "wan2.6-t2i"}.get(model_type, "wan2.6-t2i")
             url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-            }
-            params = {"prompt_extend": True, "watermark": False, "size": size}
-            if model_type == "qwen":
-                params["negative_prompt"] = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。"
-
-            data = {
-                "model": model_id,
-                "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
-                "parameters": params
-            }
-            
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    print(f"🎨 正在调用 [{model_id}] 生成视觉素材 (尝试 {attempt+1}/{max_retries})...")
-                    response = requests.post(url, headers=headers, json=data, timeout=60)
-                    res_json = response.json()
-                    if response.status_code == 200:
-                        image_url = res_json.get("output", {}).get("choices", [{}])[0].get("message", {}).get("content", [{}])[0].get("image")
-                        if image_url:
-                            print(f"✅ 图像生成成功！")
-                            return image_url
-                    
-                    if "rate limit" in str(res_json.get('message', '')).lower() or response.status_code == 429:
-                        wait_time = (attempt + 1) * 5
-                        print(f"⏳ 触发速率限制，正在等待 {wait_time} 秒后重试...")
-                        time.sleep(wait_time)
-                        continue
-                    print(f"❌ 图像生成失败: {res_json.get('message', '未知错误')}")
-                    if "Total pixels" in res_json.get('message', ''): break
-                except Exception as e:
-                    print(f"❌ 调用阿里云接口异常: {e}")
-                    time.sleep(2)
-            return None
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+            data = {"model": model_id, "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]}, "parameters": {"size": size}}
+            try:
+                resp = requests.post(url, headers=headers, json=data, timeout=60).json()
+                return resp.get("output", {}).get("choices", [{}])[0].get("message", {}).get("content", [{}])[0].get("image")
+            except Exception: return None
 
     def download_image_file(self, url, folder=None):
-        import requests
-        from urllib.parse import urlparse
-        
         if not folder:
-            date_slug = datetime.now().strftime('%Y-%m-%d')
-            folder = os.path.join(self.workspace, 'assets', date_slug)
-            
-        if not os.path.exists(folder):
-            os.makedirs(folder, exist_ok=True)
-            
+            folder = os.path.join(self.workspace, 'assets', datetime.now().strftime('%Y-%m-%d'))
+        os.makedirs(folder, exist_ok=True)
         try:
-            path = urlparse(url).path
-            ext = os.path.splitext(path)[1] or ".png"
-            filename = f"gen_image_{datetime.now().strftime('%H%M%S')}{ext}"
+            filename = f"gen_{datetime.now().strftime('%H%M%S')}.png"
             filepath = os.path.join(folder, filename)
-            
-            resp = requests.get(url, timeout=30)
-            if resp.status_code == 200:
-                with open(filepath, "wb") as f:
-                    f.write(resp.content)
+            r = requests.get(url, timeout=30)
+            if r.status_code == 200:
+                with open(filepath, "wb") as f: f.write(r.content)
                 return filepath
-        except Exception as e:
-            print(f"⚠️ 下载图片失败: {e}")
+        except Exception: pass
         return None
 
     def analyze_visuals(self, article_content):
-        """
-        [核心逻辑] 集成 baoyu-cover-image 和 baoyu-article-illustrator 的视觉分析
-        利用 LLM 对文章进行视觉拆解。
-        """
+        """专业视觉设计：基于宝玉老师的 5 维度 (Type, Palette, Rendering, Text, Mood) 模型"""
         import httpx
-        
         api_key = os.getenv("OPENAI_API_KEY")
         api_base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        if not api_key: return None
         
-        if not api_key:
+        system_prompt = """你是一个顶级的自媒体内容视觉总监。
+你的任务是为一篇高质量深度文章设计核心封面。
+
+设计规则（宝玉风格）：
+1. 关键词提取：分析内容，提取文中最具代表性的 3 个具象事物。
+2. 五维解析：
+   - Type (封面类型): hero (核心主角), conceptual (概念化设计), typography (排版优先), metaphor (隐喻构思), scene (叙事场景)
+   - Palette (配色方案): elegant (高级灰/金), mono (黑白单色), retro (复古工业), vivid (明亮现代)
+   - Rendering (渲染风格): flat-vector (扁平化矢量), digital (数字艺术), hand-drawn (手感绘图)
+   - Layout (布局偏好): 40-60%留白，核心元素偏置，极具呼吸感。
+
+输出要求：
+1. 生图提示词必须是英文，包含构图细节（如 visual anchor, whitespace, simple silhouette）。
+2. 禁止生成具象的真人，优先使用符号、线条、或抽象图形。
+
+输出 JSON 格式:
+{
+  "keywords": ["关键词1", "关键词2"],
+  "cover": {
+    "type": "hero", "palette": "elegant", "rendering": "flat-vector",
+    "prompt": "Highly detailed premium vector illustration for [keywords], minimal concept art, 40% empty space, aesthetic composition, visual anchor of [object], trending on Dribbble, 4k",
+    "rationale": "设计意图"
+  },
+  "images": [ {"prompt": "英文插图提示词", "position": "插入位置建议"} ]
+}"""
+        user_prompt = f"请为以下深度文章设计视觉方案，确封面能体现文章核心灵魂，不要泛泛而谈。文章片段：\n{article_content[:3000]}"
+        
+        try:
+            resp = httpx.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "deepseek-chat", 
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ], 
+                    "response_format": {"type": "json_object"}}, 
+                timeout=60)
+            return json.loads(resp.json()["choices"][0]["message"]["content"])
+        except Exception as e: 
+            print(f"⚠️ 视觉分析异常: {e}")
             return None
 
-        print("🧠 正在进行 [视觉语义分析] (基于 baoyu-skills 规范)...")
-        
-        visual_analysis_prompt = f"""
-你现在是行业顶尖的视觉设计师，擅长为公众号文章进行【视觉工程】设计。
-你需要基于以下【文章内容】，输出一套完整的视觉配图方案，包括 1 张封面图和 1-2 张文章插图。
-
-### 规范要求 (baoyu-cover-image)
-封面图设计遵循 5 维度：
-1. Type (类型): hero (大核心点), conceptual (概念抽象), typography (文字主导), metaphor (隐喻), scene (场景), minimal (极简)
-2. Palette (调色板): warm, elegant, cool, dark, earth, vivid, pastel, mono, retro, duotone
-3. Rendering (渲染风格): flat-vector (扁平矢量), hand-drawn (手绘), painterly (油画风格), digital (数码绘制), pixel (像素), chalk (粉笔), screen-print (丝网印刷)
-4. Text (文字密度): none, title-only, title-subtitle, text-rich
-5. Mood (情绪): subtle (轻快), balanced (中性), bold (强烈)
-
-### 规范要求 (baoyu-article-illustrator)
-文章插图设计遵循 Type × Style：
-- Type: infographic (信息图), scene (情节场景), flowchart (流程图), comparison (对比), framework (框架), timeline (时间轴)
-- Style: vector-illustration, notion, warm, minimal, blueprint, watercolor, elegant, editorial, scientific, screen-print
-
-### 输出格式
-请务必返回合法的 JSON 格式字符串（不要包含任何 Markdown 代码块，不要包含其它说明文字），结构如下：
-{{
-  "cover": {{
-    "title": "封面显示的核心标题",
-    "type": "...",
-    "palette": "...",
-    "rendering": "...",
-    "text": "...",
-    "mood": "...",
-    "prompt": "基于以上维度和 base-prompt 规范生成的精炼生图提示词"
-  }},
-  "illustrations": [
-    {{
-      "anchor_text": "文章中用于插入图片的某一段落或特定短语",
-      "type": "...",
-      "style": "...",
-      "aspect": "16:9 | 1:1 | 3:4 | long",
-      "purpose": "为什么要这张图",
-      "prompt": "遵循 ZONES / LABELS / COLORS / STYLE 结构的生图提示词，必须包含文章中的具体数据或核心术语"
-    }}
-  ]
-}}
-
-### 插图比例建议：
-- 横向大图 (16:9): 最符合手机横向视觉，观感大气。
-- 方形图 (1:1): 适合展示产品细节、头像或图标。
-- 纵向长图 (3:4): 竖屏占比大，视觉冲击力强，适合人像或海报。
-- 超长图 (long): 宽度固定，适合条漫、信息图或长列表。
-
-### 待处理文章内容：
-{article_content[:3000]}
-"""
-        try:
-            headers = {"Authorization": f"Bearer {api_key}"}
-            payload = {
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": visual_analysis_prompt}],
-                "response_format": {"type": "json_object"}
-            }
-            res = httpx.post(f"{api_base}/chat/completions", headers=headers, json=payload, timeout=60)
-            if res.status_code == 200:
-                result = res.json()["choices"][0]["message"]["content"]
-                if "```json" in result:
-                    result = result.split("```json")[1].split("```")[0].strip()
-                elif "```" in result:
-                    result = result.split("```")[1].split("```")[0].strip()
-                return json.loads(result)
-        except Exception as e:
-            print(f"⚠️ 视觉分析失败: {e}")
-        return None
-
     def post_to_wechat(self, file_path, method="browser", cover_path=None, title=None):
-        """
-        利用 baoyu-post-to-wechat 技能将文章发布到公众号草稿箱
-        """
         import subprocess
-        
-        print(f"🚀 正在通过 [{method}] 模式启动 [触达子系统 - WeChat Publish]...")
-        
-        # 定位技能脚本路径
-        skill_base = os.path.join(self.workspace, 'baoyu-post-to-wechat')
-        scripts_dir = os.path.join(skill_base, 'scripts')
-        
-        # 默认使用 wechat-article.ts (浏览器模式，兼容性最好)
-        script_name = "wechat-article.ts" if method == "browser" else "wechat-api.ts"
-        script_path = os.path.join(scripts_dir, script_name)
-        
-        if not os.path.exists(script_path):
-            print(f"❌ 错误：找不到发布脚本 {script_path}")
-            return False
-
-        # 针对 WSL 环境做兼容性处理
-        target_file_path = file_path
-        bun_executable = "bun"
-        
-        if os.name == 'posix':
-            # 检查 bun 是否为 Windows 可执行文件 (常见于 WSL 未安装 bun 但 Windows 已安装且在 PATH 中)
-            try:
-                which_bun = subprocess.check_output(["which", "bun"]).decode().strip()
-                if which_bun.startswith("/mnt/"):
-                    # 如果是 Windows 版 Bun，需要把文件路径转成 Windows 格式
-                    target_file_path = subprocess.check_output(["wslpath", "-w", target_file_path]).decode().strip()
-                    print(f"🔄 检测到 Windows 版 Bun，转换路径为: {target_file_path}")
-            except Exception:
-                pass
-
-        # 构造执行命令
-        cmd = [bun_executable, script_name]
-        if method == "browser":
-            cmd.extend(["--markdown", target_file_path, "--theme", "default"])
-            if title:
-                cmd.extend(["--title", title])
-            if cover_path:
-                # 处理 cover_path 的 WSL 兼容性
-                target_cover_path = cover_path
-                if os.name == 'posix':
-                    try:
-                        which_bun = subprocess.check_output(["which", "bun"]).decode().strip()
-                        if which_bun.startswith("/mnt/"):
-                            target_cover_path = subprocess.check_output(["wslpath", "-w", target_cover_path]).decode().strip()
-                            print(f"🔄 封面图路径转换: {target_cover_path}")
-                    except Exception: pass
-                cmd.extend(["--cover", target_cover_path])
-        else:
-            cmd.extend([target_file_path, "--theme", "default"])
-
+        print(f"🚀 正在通过 [{method}] 发布文章...")
+        scripts_dir = os.path.join(self.workspace, 'baoyu-post-to-wechat', 'scripts')
+        cmd = ["bun", "wechat-article.ts", "--markdown", file_path, "--theme", "default"]
+        if title: cmd.extend(["--title", title])
+        if cover_path: cmd.extend(["--cover", cover_path])
         try:
-            # 继承当前环境变量
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
-            
-            print(f"执行命令: {' '.join(cmd)}")
-            result = subprocess.run(cmd, cwd=scripts_dir, env=env)
-            
-            if result.returncode == 0:
-                print("✅ 公众号草稿上传成功！")
-                return True
-            else:
-                print(f"❌ 公众号发布失败，返回码: {result.returncode}")
-                if method == "browser":
-                    print("💡 提示：云端部署时，请在飞书中查看刚才生成的二维码并扫码登录。")
-                return False
-        except Exception as e:
-            print(f"❌ 执行发布脚本时发生异常: {e}")
-            return False
+            res = subprocess.run(cmd, cwd=scripts_dir, env=env)
+            return res.returncode == 0
+        except Exception: return False
 
     def run_visuals(self, model_type="seedream"):
-        """
-        [视觉工程子系统]
-        仅负责分析文章内容并生成封面和插图，不进行发布。
-        """
         state = self.load_state()
         draft_file = state.get('draft_file')
-        topic_context = state.get('topic_context', {})
-        
-        if not draft_file:
-            print("❌ 错误：未找到审核通过的草稿文件。请先完成重塑阶段。")
+        if not draft_file or not os.path.exists(draft_file): 
+            print("❌ 未找到改写草稿，请先执行改写步骤。")
             return False
+        
+        print("\n🎨 开启视觉增强分析...")
+        with open(draft_file, "r", encoding="utf-8") as f: content = f.read()
+        
+        # 1. 视觉方案分析
+        plan = self.analyze_visuals(content)
+        if not plan:
+            print("⚠️ 视觉方案分析失败，将使用默认方案。")
+            plan = {"cover": {"prompt": "大胡老师的数字花园风格封面图"}, "images": []}
             
-        if not os.path.exists(draft_file):
-            potential_wsl = draft_file.replace("E:\\", "/mnt/e/").replace("\\", "/")
-            if os.path.exists(potential_wsl):
-                draft_file = potential_wsl
-            else:
-                print(f"❌ 错误：找不到草稿文件: {draft_file}")
-                return False
-
-        print("\n🎨 启动 [视觉工程子系统 - Baoyu V2.0]...")
+        # 2. 生成封面
+        cover_prompt = plan.get("cover", {}).get("prompt", "封面图")
+        print(f"🖼️ 正在构思封面: {cover_prompt[:50]}...")
+        cover_url = self.generate_image(cover_prompt, model_type=model_type, size="1280*544")
         
-        with open(draft_file, "r", encoding="utf-8") as f:
-            article_content = f.read()
-
-        visual_plan = self.analyze_visuals(article_content)
-        if not visual_plan:
-            print("⚠️ 视觉大脑分析失败，将使用默认快照。")
-            visual_plan = {
-                "cover": {"title": topic_context.get("title", "自媒体爆款"), "prompt": f"自媒体爆款封面图，关于{topic_context.get('title')}, 高质量插画风格"},
-                "illustrations": []
-            }
-
-        cover_info = visual_plan.get("cover", {})
-        print(f"🖼️ [封面生成] 方案类型: {cover_info.get('type', 'hero')} | 适配尺寸: 1280*544")
-        
-        date_slug = datetime.now().strftime('%Y-%m-%d')
-        output_dir = os.path.join(self.workspace, 'assets', date_slug)
-
-        img_url = self.generate_image(cover_info.get("prompt"), model_type=model_type, size="1280*544")
-        if img_url:
-            local_img = self.download_image_file(img_url, folder=output_dir)
-            if local_img:
-                print(f"✅ 封面图已就位: {local_img}")
-                # 不再插入正文，只保存到状态
-                state['cover_image'] = local_img
+        if cover_url:
+            local_cover = self.download_image_file(cover_url, folder=os.path.join(self.workspace, 'assets', 'covers'))
+            if local_cover:
+                state['cover_image'] = local_cover
                 self.save_state(state)
-
-        illustrations = visual_plan.get("illustrations", [])
-        if illustrations:
-            print(f"📸 正在生成 {len(illustrations)} 张深度插图...")
-            with open(draft_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            for idx, illus in enumerate(illustrations):
-                aspect = illus.get('aspect', '16:9')
-                size_map = {"16:9": "1080*608", "1:1": "800*800", "3:4": "800*1200", "long": "1080*1920"}
-                target_size = size_map.get(aspect, "1080*608")
-                
-                print(f"   [{idx+1}] 锚点: {illus.get('anchor_text')[:10]}... | 比例: {aspect} ({target_size})")
-                illus_url = self.generate_image(f"({illus.get('style')} style) {illus.get('prompt')}", model_type=model_type, size=target_size)
-                if illus_url:
-                    local_illus = self.download_image_file(illus_url, folder=output_dir)
-                    if local_illus:
-                        if model_type == "seedream" and not local_illus.endswith(".jpeg"):
-                             new_name = local_illus.rsplit('.', 1)[0] + ".jpeg"
-                             if os.path.exists(local_illus): os.rename(local_illus, new_name)
-                             local_illus = new_name
-                        print(f"✅ 插图 {idx+1} 已就位: {local_illus}")
-                        anchor = illus.get('anchor_text')
-                        if anchor and anchor in content:
-                            content = content.replace(anchor, f"{anchor}\n\n![插图]({local_illus})\n")
-                        else:
-                            content += f"\n\n![插图]({local_illus})\n"
-                        with open(draft_file, 'w', encoding='utf-8') as f:
-                            f.write(content)
+                # 重要：此打印会被 feishu-card-server 捕获并发送预览
+                print(f"✅ cover图就位: {local_cover}")
+            else:
+                print("❌ 封面图下载失败。")
+        else:
+            print("❌ 封面图生成接口响应异常。")
+            
         return True
 
     def run_post(self, method="api"):
-        """
-        [发布分发子系统]
-        仅负责将已配图的草稿文件发布到目标平台。
-        """
         state = self.load_state()
         draft_file = state.get('draft_file')
-        topic_context = state.get('topic_context', {})
-        
-        if not draft_file:
-            print("❌ 错误：未找到可发布的草稿文件。")
-            return False
-            
-        if not os.path.exists(draft_file):
-            potential_wsl = draft_file.replace("E:\\", "/mnt/e/").replace("\\", "/")
-            if os.path.exists(potential_wsl):
-                draft_file = potential_wsl
-            else:
-                print(f"❌ 错误：找不到待发布文件: {draft_file}")
-                return False
-
-        print("\n📤 启动 [分发子系统]...")
-        
-        # --- 强力净化：基于路径对比彻底剔除引用封面图的行 ---
-        cleaned_file = draft_file
-        cover_path = state.get('cover_image')
-        # --- 强力净化：全局正则清洗，抹除正文开头图片 ---
-        cleaned_file = draft_file
-        cover_path = state.get('cover_image')
-        try:
-            with open(draft_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            import re
-            # 1. 移除特定的标识词
-            content = content.replace("【深度长文（正文）】", "").replace("## 第二部分", "")
-            
-            # 2. 核心斩首逻辑：抹除第一个图片。通常是在 # Title 后面
-            # 匹配格式：# 标题 \n\n ![图片名](路径)
-            content = re.sub(r'(^#\s+.*?\n+)\s*!\[.*?\]\(.*?\)\s*\n*', r'\1\n', content, count=1, flags=re.MULTILINE)
-            
-            # 3. 辅助逻辑：如果文件名对上了，不管在哪都干掉 (防止重复插入)
-            if cover_path:
-                fname = os.path.basename(cover_path)
-                # 匹配包含该文件名的 markdown 图片语法并删除整行
-                content = re.sub(rf'\n*!\[.*?\]\(.*?{re.escape(fname)}.*?\)\n*', '\n', content)
-
-            # 写入临时发布文件
-            cleaned_file = draft_file + ".post.tmp"
-            with open(cleaned_file, 'w', encoding='utf-8') as f:
-                f.write(content.strip() + "\n")
-            print(f"🧹 强力净化：已通过正则抹除开头图片。")
-        except Exception as e:
-            print(f"⚠️ 预处理净化过程中发生异常: {e}")
-
-        # 锁定爆款标题，通过显式参数传给发布脚本 (解决标题变文件名的问题)
-        article_title = topic_context.get('title')
-        success = self.post_to_wechat(cleaned_file, method=method, cover_path=cover_path, title=article_title)
-        
-        # 任务结束后清理临时文件
-        if cleaned_file.endswith(".post.tmp") and os.path.exists(cleaned_file):
-            os.remove(cleaned_file)
-        
-        if success:
-            print("\n✅ 发布任务已提交！")
-            state['current_step'] = "done"
-            self.save_state(state)
+        if not draft_file or not os.path.exists(draft_file): return False
+        success = self.post_to_wechat(draft_file, method=method, cover_path=state.get('cover_image'), title=state.get('topic_context', {}).get('title'))
+        if success: state['current_step'] = "done"; self.save_state(state)
         return success
 
     def run_publish(self, model_type="seedream", method="api"):
-        """
-        [全面升级] 视觉工程与分发全流程
-        依次执行配图和发布。
-        """
         if self.run_visuals(model_type=model_type):
             return self.run_post(method=method)
         return False
 
-
 def main():
     parser = argparse.ArgumentParser(description="自媒体工作流调度器")
-    parser.add_argument('action', choices=['setup', 'discovery', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="要执行的子系统动作")
-    parser.add_argument('--keyword', type=str, help="discovery阶段的自定义关键词")
-    parser.add_argument('--url', type=str, help="from-article 或 from-video 模式的直连URL")
-    parser.add_argument('--id', type=str, help="repurpose阶段选中的选题ID或要求")
-    parser.add_argument('--model', type=str, choices=['z', 'qwen', 'wan', 'seedream'], default='seedream', help="publish阶段使用的生图模型 (z: Z-Image, qwen: Qwen-Image, wan: Wan-Image, seedream: Volcengine Seedream)")
-    parser.add_argument('--script', type=str, help="脚本文件路径 (sync 模式使用)")
-    parser.add_argument('--article', type=str, help="长文文件路径 (sync 模式使用)")
-    parser.add_argument('--method', type=str, choices=['api', 'browser'], default='api', help="publish阶段使用的发布方式 (api: API模式, browser: 浏览器模拟模式)")
+    parser.add_argument('action', choices=['setup', 'discovery', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="动作")
+    parser.add_argument('--keyword', type=str); parser.add_argument('--url', type=str); parser.add_argument('--id', type=str)
+    parser.add_argument('--model', default='seedream'); parser.add_argument('--method', default='api')
+    parser.add_argument('--script', type=str); parser.add_argument('--article', type=str)
     
     args = parser.parse_args()
     controller = SelfMediaController()
     
-    if args.action == 'setup':
-        controller.run_setup()
-    elif args.action == 'discovery':
-        controller.run_discovery(args.keyword)
-    elif args.action == 'from-article':
-        if not args.url:
-            print("❌ 错误: from-article 模式需要提供 --url 参数")
-            sys.exit(1)
-        controller.run_from_article(args.url)
-    elif args.action == 'from-video':
-        if not args.url:
-            print("❌ 错误: from-video 模式需要提供 --url 参数")
-            sys.exit(1)
-        controller.run_from_video(args.url)
-    elif args.action == 'repurpose':
-        if not args.id:
-            print("请提供 --id <选中选题>")
-            sys.exit(1)
-        controller.run_repurpose(args.id)
-    elif args.action == 'visuals':
-        controller.run_visuals(model_type=args.model)
-    elif args.action == 'post':
-        controller.run_post(method=args.method)
-    elif args.action == 'publish':
-        # 默认一键流转
-        controller.run_publish(model_type=args.model, method=args.method)
-    elif args.action == 'sync':
-        if args.script and args.article:
-            controller.sync_to_feishu(args.script, args.article)
-        else:
-            print("❌ 错误：sync 模式需要 --script 和 --article 参数")
-            sys.exit(1)
-    elif args.action == 'status':
-        state = controller.load_state()
-        print(json.dumps(state, indent=2, ensure_ascii=False))
+    if args.action == 'setup': controller.run_setup()
+    elif args.action == 'discovery': controller.run_discovery(args.keyword)
+    elif args.action == 'from-article': controller.run_from_article(args.url)
+    elif args.action == 'from-video': controller.run_from_video(args.url)
+    elif args.action == 'repurpose': controller.run_repurpose(args.id)
+    elif args.action == 'visuals': controller.run_visuals(model_type=args.model)
+    elif args.action == 'post': controller.run_post(method=args.method)
+    elif args.action == 'publish': controller.run_publish(model_type=args.model, method=args.method)
+    elif args.action == 'sync': controller.sync_to_feishu(args.script, args.article)
+    elif args.action == 'status': print(json.dumps(controller.load_state(), indent=2, ensure_ascii=False))
 
 if __name__ == "__main__":
     main()

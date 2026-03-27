@@ -14,6 +14,8 @@ import socket
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import uuid
+import requests
+import httpx
 
 # Global cache for topic mapping (GUID -> Topic Dict)
 # This prevents ID collisions across different batches/pages
@@ -25,6 +27,44 @@ APP_SECRET = "WOjERqoJ8OhIwIthMS3NAcJAxFDvXK2X"
 DEFAULT_RECEIVE_ID = "ou_2da8e0f846c19c8fabebd6c6d82a8d6d"
 WORKDIR = r"C:\Users\Administrator\.openclaw\workspace-ips-maker\skills\self-media-auto"
 STATE_FILE = WORKDIR + r"/.workflow_state.json"
+
+
+def load_persistent_map():
+    """Load TOPIC_MAP from persistent state file on startup."""
+    global TOPIC_MAP
+    if not os.path.exists(STATE_FILE):
+        return
+    try:
+        with open(STATE_FILE, 'r', encoding='utf-8') as f:
+            state = json.load(f)
+            persisted = state.get('topic_map', {})
+            if persisted:
+                TOPIC_MAP.update(persisted)
+                print(f"[INIT] Loaded {len(TOPIC_MAP)} persistent topic mappings from state file.")
+    except Exception as e:
+        print(f"[WARN] Failed to load persistent topic map: {e}")
+
+
+def save_persistent_map():
+    """Save the current TOPIC_MAP to persistent state file."""
+    if not os.path.exists(STATE_FILE):
+        return
+    try:
+        # Read current state first to avoid overwriting other keys
+        with open(STATE_FILE, 'r', encoding='utf-8') as f:
+            state = json.load(f)
+        
+        state['topic_map'] = TOPIC_MAP
+        
+        with open(STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+        # print(f"[DEBUG] TOPIC_MAP persisted to {STATE_FILE}")
+    except Exception as e:
+        print(f"[WARN] Failed to persist topic map: {e}")
+
+
+# Initialize on import/startup
+load_persistent_map()
 
 
 class FeishuHandler(BaseHTTPRequestHandler):
@@ -122,7 +162,21 @@ class FeishuHandler(BaseHTTPRequestHandler):
             action_value = event.get('action', {}).get('value')
 
         if action_value:
-            self.handle_card_action(action_value)
+            # 立即返回 200 并携带 Toast，提供秒级反馈感
+            resp_data = {
+                "toast": {
+                    "type": "info",
+                    "content": "🚀 动作已受理，正在处理中..."
+                }
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp_data).encode('utf-8'))
+            
+            # 线程异步执行真正的重活
+            threading.Thread(target=self.handle_card_action, args=(action_value,)).start()
+            return
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -245,6 +299,8 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 state = json.load(f)
 
             topic_id_str = str(topic_id).strip()
+            updated = False
+
             # 1. 优先从全局映射中通过 GUID 查找
             if topic_id_str in TOPIC_MAP:
                 selected = TOPIC_MAP[topic_id_str]
@@ -257,30 +313,30 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 }
                 updated = True
                 print(f"[DEBUG] Updated topic_context via TOPIC_MAP GUID {topic_id_str}: {selected.get('title', '')[:50]}", flush=True)
-            else:
-                # 2. 兜底逻辑：尝试作为数字索引查找 (向上兼容老卡片)
+
+            # 2. 如果 GUID 没中，且不是 URL，则尝试作为数字索引查找 (向上兼容老卡片)
+            if not updated and not topic_id_str.startswith('http'):
                 candidates = state.get('last_candidates', [])
-                numeric_id = None
                 try:
                     # Handle "insight_1" or "1"
                     raw_id = topic_id_str.split('_')[-1]
                     numeric_id = int(raw_id)
-                except ValueError:
+                    if 0 < numeric_id <= len(candidates):
+                        selected = candidates[numeric_id - 1]
+                        state['topic_context'] = {
+                            'id': selected.get('id', ''),
+                            'title': selected.get('title', ''),
+                            'source': selected.get('source', ''),
+                            'author': selected.get('author', ''),
+                            'score': selected.get('score', '')
+                        }
+                        updated = True
+                        print(f"[DEBUG] Updated topic_context via index {numeric_id}: {selected.get('title', '')[:50]}", flush=True)
+                except (ValueError, IndexError):
                     pass
 
-            updated = False
-            if not updated and numeric_id is not None and 0 < numeric_id <= len(candidates):
-                selected = candidates[numeric_id - 1]
-                state['topic_context'] = {
-                    'id': selected.get('id', ''),
-                    'title': selected.get('title', ''),
-                    'source': selected.get('source', ''),
-                    'author': selected.get('author', ''),
-                    'score': selected.get('score', '')
-                }
-                updated = True
-                print(f"[DEBUG] Updated topic_context to topic {numeric_id}: {selected.get('title', '')[:50]}", flush=True)
-            elif topic_id_str.startswith('http'):
+            # 3. 如果还是没中，且是 URL
+            if not updated and topic_id_str.startswith('http'):
                 state['topic_context'] = {
                     'id': topic_id_str,
                     'title': topic_id_str.split('?')[0][-30:],
@@ -289,14 +345,22 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 }
                 updated = True
                 print(f"[DEBUG] Updated topic_context to URL: {topic_id_str[:50]}", flush=True)
-            else:
-                print(f"[DEBUG] Topic ID {topic_id_str} out of range, keeping existing", flush=True)
+
+            if not updated:
+                print(f"[DEBUG] Topic ID {topic_id_str} could not be resolved, keeping existing context", flush=True)
 
             if updated:
-                with open(STATE_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(state, f, indent=2, ensure_ascii=False)
+                self.save_state(state)
         except Exception as e:
             print(f"[ERROR] update_topic_context_by_id failed: {e}", flush=True)
+
+    def save_state(self, state):
+        """Save workflow state to JSON file."""
+        try:
+            with open(STATE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[ERROR] save_state failed: {e}", flush=True)
             import traceback
             traceback.print_exc()
 
@@ -357,34 +421,47 @@ class FeishuHandler(BaseHTTPRequestHandler):
             action_type = parts[0] if parts else 'unknown'
 
             if action_type == 'next':
+                self.send_text(token, "🔍 正在为您检索下一批爆款选题...\n\n(预计 15-30 秒)")
                 threading.Thread(target=self.run_discovery_and_send_cards, args=(token,)).start()
             elif action_type == 'insight':
                 topic_id = parts[1] if len(parts) > 1 else None
                 if topic_id:
                     self.update_topic_context_by_id(token, topic_id)
+                self.send_text(token, "🧠 正在对该选题进行深度爆点分析与 IP 切入点规划...\n\n(预计 20-40 秒)")
                 threading.Thread(target=self.run_insight_and_send_card, args=(token, action_value)).start()
             elif action_type == 'skip':
+                self.send_text(token, "⏩ 正在跳过并检索新选题...")
                 threading.Thread(target=self.run_discovery_and_send_cards, args=(token,)).start()
             elif action_type == 'refresh':
+                self.send_text(token, "🔄 正在刷新爆款库...")
                 threading.Thread(target=self.run_discovery_and_send_cards, args=(token,)).start()
             elif action_type == 'init':
                 threading.Thread(target=self.run_init_and_send_card, args=(token,)).start()
             elif action_type == 'rewrite':
+                self.send_text(token, "📝 正在为您进行 IP 化改写，生成脚本与长文...\n\n(预计 1-2 分钟，请稍候)")
                 threading.Thread(target=self.run_repurpose_and_send_card, args=(token, action_value)).start()
             elif action_type == 'approve':
                 threading.Thread(target=self.run_approve_and_track, args=(token, action_value)).start()
             elif action_type == 'modify':
                 threading.Thread(target=self.run_modify_and_send_card, args=(token, action_value)).start()
             elif action_type == 'rescript':
+                self.send_text(token, "🔄 正在重新打磨短视频脚本...")
                 threading.Thread(target=self.run_rescript_and_send_card, args=(token, action_value)).start()
             elif action_type == 'rearticle':
+                self.send_text(token, "🔄 正在重新润色深度长文...")
                 threading.Thread(target=self.run_rearticle_and_send_card, args=(token, action_value)).start()
             elif action_type.startswith('post'):
+                self.send_text(token, "🚀 正在将内容同步至公众号草稿箱...")
                 threading.Thread(target=self.run_post, args=(token,)).start()
             elif action_type == 'copy':
                 self.send_copy_guide(token)
+            elif action_type.startswith('retry_visual_'):
+                mtype = action_type.replace('retry_visual_', '')
+                self.send_text(token, f"🔄 正在尝试使用 [{mtype}] 引擎重新绘图，请稍候...")
+                threading.Thread(target=self.run_final_and_send_card, args=(token,), kwargs={'model': mtype}).start()
             else:
-                self.send_text(token, f"收到未知操作: {action_type}，请直接告诉我您想做什么")
+                print(f"[DEBUG] Unknown action_type: {action_type}", flush=True)
+                # self.send_text(token, f"收到未知操作: {action_type}，请直接告诉我您想做什么")
         except Exception as e:
             print(f"[ERROR] handle_card_action failed: {e}", flush=True)
             import traceback
@@ -447,7 +524,11 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 pass
 
             if use_refresh:
+                last_id = state.get('cimi_last_id', '')
                 cmd = ['python', '-u', 'workflow_controller.py', 'discovery', '--refresh']
+                if last_id:
+                    cmd.extend(['--last_id', last_id])
+                    print(f"[DEBUG] Reaching end of cache. Fetching next page from API with last_id: {last_id}", flush=True)
             else:
                 cmd = ['python', '-u', 'workflow_controller.py', 'next']
 
@@ -559,6 +640,8 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     topics.append(current_topic)
                     current_topic = None
 
+        # Persist the new mappings to disk immediately
+        save_persistent_map()
         return topics
 
     def build_topic_card(self, title, data_str, url, analysis, topic_id):
@@ -675,7 +758,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     f"选题标题：{title}\n原文作者：{author}\n热度指数：{score}\n\n"
                     f"原文内容摘要：{raw_content[:1000]}\n\n"
                     f"请从以下四个维度分析（每条不超过50字）：\n"
-                    f"1. 【传控铰剪辑】核心情绪是什么？为何能引发传播？\n"
+                    f"1. 【核心情绪】核心情绪是什么？为何能引发传播？\n"
                     f"2. 【IP切入点】从这个IP应该从哪个差异化角度切入？\n"
                     f"3. 【可借鉴点】哪些爆点元素值得借鉴？\n"
                     f"4. 【风险提示】有无敏感话题风险？\n\n"
@@ -881,7 +964,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
         elements.append({"tag": "hr"})
         elements.append({
             "tag": "note", 
-            "elements": [{"tag": "plain_text", "content": f"流水号: {review_id} | 实时时间: {now_str} | [正品验证] ✨"}]
+            "elements": [{"tag": "plain_text", "content": f"更新时间: {now_str}"}]
         })
         elements.append({
             "tag": "action",
@@ -892,7 +975,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             ]
         })
 
-        hdr = f"🚀 [实时] {header_title}" if header_title else "📋 [实时] 内容审核"
+        hdr = header_title if header_title else "📋 内容审核"
         return {
             "config": {"wide_screen_mode": True},
             "header": {"template": template, "title": {"tag": "plain_text", "content": hdr}},
@@ -1076,9 +1159,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
         remaining = 2 - new_approved_count
 
         if new_approved_count < 2:
-            self.send_text(token, f"✅ 【{kind}】已通过，还剩{remaining}项通过后即可生成封面图...")
+            self.send_text(token, f"✅ 【{kind}】已确认通过。\n\n还剩 1 项确认后将自动进入视觉工程阶段。")
         else:
-            self.send_text(token, "🎉 脚本+文章均已通过，正在生成封面图...")
+            self.send_text(token, "🎉 脚本+文章均已审核完成！\n\n🎨 正在启动视觉工程：分析内容、生成封面图与文章插图...\n\n(预计 1-2 分钟，请稍候)")
             time.sleep(1)
             state['script_approved'] = False
             state['article_approved'] = False
@@ -1086,7 +1169,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 json.dump(state, f, ensure_ascii=False, indent=2)
             self.run_final_and_send_card(token)
 
-    def run_final_and_send_card(self, token):
+    def run_final_and_send_card(self, token, model='seedream'):
         """Generate visuals and send final publish card."""
         try:
             # Mutex guard
@@ -1103,11 +1186,14 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.send_text(token, "🖼️ 正在生成封面图，请稍候...")
 
             os.chdir(WORKDIR)
+            cmd = ['python', 'workflow_controller.py', 'visuals', '--model', model]
             proc = subprocess.Popen(
-                ['python', 'workflow_controller.py', 'visuals'],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 bufsize=1
             )
 
@@ -1144,16 +1230,36 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 content = raw.strip()
 
             if not any_image_generated:
-                print("[WARN] No images generated this run (SafeSearch triggered?)", flush=True)
-                self.send_text(token,
-                    "⚠️ 绘图失败了！\n\nDoubao Seedream 触发了限流（Safe Experience Mode），"
-                    "请先到 Midjourney 控制台关闭\"安全模式\"，或等片刻后重试。\n\n"
-                    "关闭方式：Midjourney → 模型激活 → doubao-seedream-5.0 → 关闭 Safe Experience Mode")
+                print("[WARN] No images generated this run (SafeSearch or API error)", flush=True)
+                
+                # 发送带有重试选项的解释
+                from datetime import datetime
+                yield_time = datetime.now().strftime('%H:%M:%S')
+                
+                retry_card = {
+                    "config": {"wide_screen_mode": True},
+                    "header": {"title": {"tag": "plain_text", "content": "⚠️ 绘图异常反馈"}, "template": "yellow"},
+                    "elements": [
+                        {"tag": "div", "text": {"tag": "lark_md", "content": "视觉方案执行未能产出图片，可能原因：\n1. **内容风控**：提示词触发了生图模型的安全过滤。\n2. **额度/限流**：API 瞬时并发过高或免费额度限制。\n3. **网络波动**：模型服务器连接超时。"}},
+                        {"tag": "hr"},
+                        {"tag": "div", "text": {"tag": "lark_md", "content": "💡 **建议：** 尝试更换更强大的生图引擎或重试一次。"}},
+                        {
+                            "tag": "action",
+                            "actions": [
+                                {"tag": "button", "text": {"tag": "plain_text", "content": "🖼️ 万相 (Wan2.6)"}, "type": "primary", "value": "retry_visual_wan"},
+                                {"tag": "button", "text": {"tag": "plain_text", "content": "🎨 通义 (Qwen)"}, "type": "default", "value": "retry_visual_qwen"},
+                                {"tag": "button", "text": {"tag": "plain_text", "content": "🔄 重试 (Seedream)"}, "type": "default", "value": "retry_visual_seedream"}
+                            ]
+                        },
+                        {"tag": "note", "elements": [{"tag": "plain_text", "content": f"更新于 {yield_time}"}]}
+                    ]
+                }
+                self.send_card(token, retry_card)
+                
                 with open(STATE_FILE, 'r', encoding='utf-8') as f:
                     cleanup = json.load(f)
                 cleanup['is_generating_cover'] = False
-                with open(STATE_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(cleanup, f, ensure_ascii=False, indent=2)
+                self.save_state(cleanup)
                 return
 
             # Upload cover image to Feishu
@@ -1284,23 +1390,69 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    # Use a fixed port to ensure single instance
+    import os
+    import sys
+    import atexit
+    import subprocess
+    import time
+    
+    # 1. 强力互斥并支持“新陈代谢”：启动新实例时，自动杀掉旧实例
+    lock_file = ".feishu_server_lock"
+    
+    if os.path.exists(lock_file):
+        try:
+            with open(lock_file, 'r') as f:
+                old_pid = f.read().strip()
+            if old_pid and old_pid != str(os.getpid()):
+                print(f"\n[🔄 自动重启] 发现旧卡服务器正在运行 (PID: {old_pid})。", flush=True)
+                print(f"正在尝试关闭旧实例并更新代码...", flush=True)
+                # 使用 taskkill 强制杀掉旧进程 (Windows 兼容)
+                subprocess.run(["taskkill", "/F", "/PID", old_pid], capture_output=True)
+                time.sleep(0.5) # 等待释放
+        except Exception as e:
+            print(f"[WARN] 清理旧实例失败: {e}", flush=True)
+        
+        # 无论如何尝试删除旧锁，为新启动腾位子
+        try: os.remove(lock_file)
+        except: pass
+
+    try:
+        # 创建新的锁文件
+        fd = os.open(lock_file, os.O_CREAT | os.O_WRONLY | os.O_EXCL)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        
+        # 注册退出清理逻辑
+        def cleanup_lock():
+            if os.path.exists(lock_file):
+                try: os.remove(lock_file)
+                except: pass
+        atexit.register(cleanup_lock)
+        
+    except FileExistsError:
+        # 万一极短时间内有竞争，提示一下
+        print(f"\n[⚠️  启动受阻] 系统极短时间内有两次启动请求，请稍后重试。")
+        sys.exit(1)
+
+    # 2. 端口启动 (固定 18799)
     port = 18799
     try:
         server = HTTPServer(('127.0.0.1', port), FeishuHandler)
-        print(f"Feishu Card Server running on http://127.0.0.1:{port}")
-        print(f"Webhook endpoint: http://127.0.0.1:{port}/feishu/callback")
-        print(f"HTTP trigger: http://127.0.0.1:{port}/trigger")
+        print(f"\n✨ 飞书卡片服务器已就绪 (PID: {os.getpid()})")
+        print(f"监听地址: http://127.0.0.1:{port}")
+        print(f"Webhook入口: /feishu/callback | 触发入口: /trigger\n")
         server.serve_forever()
     except OSError as e:
-        if e.errno == 98 or e.errno == 10048: # Address already in use
-            print(f"\n[CRITICAL] Port {port} is already in use!")
-            print(f"Another instance of feishu-card-server.py might be running.")
-            print(f"Please use 'taskkill /F /IM python.exe' if you want to restart.\n")
+        if e.errno == 98 or e.errno == 10048:
+            print(f"\n[❌ 端口占用] {port} 仍然被占用。")
+            print(f"请手动运行: taskkill /F /IM python.exe 清理。\n")
         else:
-            print(f"[ERROR] Failed to start server: {e}")
-        import sys
+            print(f"[ERROR] 启动失败: {e}")
         sys.exit(1)
+    finally:
+        if os.path.exists(lock_file):
+            try: os.remove(lock_file)
+            except: pass
 
 
 if __name__ == '__main__':
