@@ -852,7 +852,7 @@ class SelfMediaController:
             if title:
                 script_args.extend(["--title", title])
                 
-            proc = subprocess.Popen(script_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+            proc = subprocess.Popen(script_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
             for line in proc.stdout:
                 print(line, end='', flush=True)
             proc.wait()
