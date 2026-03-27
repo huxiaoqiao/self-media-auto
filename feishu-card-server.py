@@ -69,8 +69,8 @@ load_persistent_map()
 
 class FeishuHandler(BaseHTTPRequestHandler):
 
-    def log_message(self, format, *args):
-        pass  # Suppress all logs
+    # def log_message(self, format, *args):
+    #     pass  # Suppress all logs
 
     # ===== HTTP Routes =====
 
@@ -112,6 +112,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        print(f"\n[HTTP] 📥 收到 POST 请求: {self.path}", flush=True)
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length).decode('utf-8')
 
@@ -446,6 +447,85 @@ class FeishuHandler(BaseHTTPRequestHandler):
             print(f"[ERROR] handle_card_action failed: {e}", flush=True)
             import traceback
             traceback.print_exc()
+
+    def _run_workflow_async(self, token, cmd):
+        """核心异步执行引擎：负责运行工作流并实时捕捉输出推送飞书"""
+        try:
+            print(f"\n[EXEC] 🚀 启动子进程: {' '.join(cmd)}", flush=True)
+            
+            process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT, 
+                text=True, 
+                bufsize=1, 
+                encoding='utf-8', 
+                errors='replace'
+            )
+            
+            full_output = []
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+                if not line:
+                    continue
+                
+                clean_line = line.strip()
+                if clean_line:
+                    print(f"[workflow] {clean_line}", flush=True)
+                    full_output.append(clean_line)
+                    
+                    # 实现实时流式预览 (出一张发一张)
+                    if "✅ 封面图预览已就绪" in clean_line:
+                        path_match = re.search(r"(assets[\\/].+\.(?:jpg|jpeg|png|webp))", clean_line)
+                        if path_match:
+                            img_path = os.path.join(WORKDIR, path_match.group(1))
+                            print(f"[DEBUG] Found cover: {img_path}", flush=True)
+                            self.send_text(token, "🖼️ 封面图已就绪，正在发送预览...")
+                            self.send_image_preview(token, img_path)
+                    
+                    if "已就绪" in clean_line and ("插图" in clean_line or "插入图" in clean_line):
+                        path_match = re.search(r"(assets[\\/].+\.(?:jpg|jpeg|png|webp))", clean_line)
+                        if path_match:
+                            img_path = os.path.join(WORKDIR, path_match.group(1))
+                            self.send_image_preview(token, img_path)
+
+            process.wait()
+            output_str = "\n".join(full_output)
+            
+            # 如果是视觉任务结束，触发最终确认卡片
+            if 'visuals' in str(cmd):
+                self._send_visual_completion_card(token)
+                
+        except Exception as e:
+            print(f"[ERROR] _run_workflow_async failed: {e}", flush=True)
+            self.send_text(token, f"⚠️ 后台执行引擎异常: {str(e)[:100]}")
+
+    def _send_visual_completion_card(self, token):
+        """视觉任务结束后的收尾工作：合并状态发送总卡片"""
+        try:
+            import time; time.sleep(1) # 等待文件同步
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            
+            title = state.get("topic_context", {}).get("title", "内容预览")
+            draft = state.get("draft_file", "")
+            cover = state.get("cover_image", "")
+            illus = state.get("article_images", [])
+            
+            c_key = self.upload_to_feishu(cover) if cover and os.path.exists(cover) else ""
+            i_keys = [self.upload_to_feishu(p) for p in illus if os.path.exists(p)]
+            
+            content = ""
+            if draft and os.path.exists(draft):
+                with open(draft, "r", encoding="utf-8") as f:
+                    content = f.read()[:500] + "..."
+            
+            card = self.build_final_card(c_key, title, content, "高清渲染|Baoyu风格", "final_01", i_keys)
+            self.send_card(token, card)
+        except Exception as e:
+            print(f"[ERROR] final completion failed: {e}")
 
     # ===== Action Handlers =====
 

@@ -737,7 +737,7 @@ class SelfMediaController:
         plan = self.analyze_visuals(content)
         if not plan:
             print("⚠️ 视觉方案分析失败，将使用默认方案。")
-            plan = {"cover": {"prompt": "大胡老师的数字花园风格封面图"}, "images": []}
+            plan = {"cover": {"prompt": "大胡老师的数字花园风格封面图"}, "illustrations": []}
             
         # 2. 生成封面
         cover_prompt = plan.get("cover", {}).get("prompt", "封面图")
@@ -757,7 +757,7 @@ class SelfMediaController:
             print("❌ 封面图生成接口响应异常。", flush=True)
 
         # 3. 生成文章插图 (Baoyu Article Illustrator 逻辑)
-        illustrate_images = plan.get("images", [])
+        illustrate_images = plan.get("illustrations", [])
         if illustrate_images:
             print(f"\n🎨 发现 {len(illustrate_images)} 处插图建议，正在并行生成...", flush=True)
             state['article_images'] = []
