@@ -525,14 +525,28 @@ class SelfMediaController:
             if not api_key: return None
             url = "https://ark.cn-beijing.volces.com/api/v3/images/generations"
             headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-            vs = "3k" if "1024" in size else "3072x1308"
-            # 模型回退至稳定版 4.5
-            data = {"model": "doubao-seedream-4.5", "prompt": prompt, "size": vs, "response_format": "url"}
+            
+            # 🚀 强制同步为用户提供的最新 API 规范 (Seedream 4.5)
+            data = {
+                "model": "doubao-seedream-4-5-251128",
+                "prompt": prompt,
+                "size": "2K",
+                "response_format": "url",
+                "sequential_image_generation": "disabled",
+                "stream": False,
+                "watermark": True
+            }
             try:
-                print(f"[视觉工程] 正在调用火山引擎(Seedream 4.5)渲染封面图...")
-                resp = requests.post(url, headers=headers, json=data, timeout=60).json()
-                return resp.get("data", [{}])[0].get("url")
-            except Exception: return None
+                print(f"[视觉工程] 正在通过 Ark 调用火山引擎(Seedream 4.5/2.0) 渲染 {size} 比例资产...")
+                r = requests.post(url, headers=headers, json=data, timeout=60)
+                resp = r.json()
+                img_url = resp.get("data", [{}])[0].get("url")
+                if not img_url:
+                    print(f"[ERROR] Volcengine API Response: {resp}")
+                return img_url
+            except Exception as e:
+                print(f"[ERROR] Volcengine generation failed: {e}")
+                return None
         else:
             api_key = os.getenv("DASHSCOPE_API_KEY")
             if not api_key: return None
@@ -649,11 +663,42 @@ class SelfMediaController:
                 state['cover_image'] = local_cover
                 self.save_state(state)
                 # 重要：此打印会被 feishu-card-server 捕获并发送预览
-                print(f"✅ cover图就位: {local_cover}")
+                print(f"✅ 封面图预览已就绪 {local_cover}", flush=True)
             else:
-                print("❌ 封面图下载失败。")
+                print("❌ 封面图下载失败。", flush=True)
         else:
-            print("❌ 封面图生成接口响应异常。")
+            print("❌ 封面图生成接口响应异常。", flush=True)
+
+        # 3. 生成文章插图 (Baoyu Article Illustrator 逻辑)
+        illustrate_images = plan.get("images", [])
+        if illustrate_images:
+            print(f"\n🎨 发现 {len(illustrate_images)} 处插图建议，正在并行生成...", flush=True)
+            state['article_images'] = []
+            
+            # 由于当前环境限制，采用顺序生成。如果性能需要，未来可改为线程池。
+            for i, img_info in enumerate(illustrate_images, 1):
+                p = img_info.get("prompt", "")
+                if not p: continue
+                
+                # 注入风格统一指令
+                style_context = plan.get("cover", {})
+                p = f"{p}, style: {style_context.get('rendering', 'flat-vector')}, palette: {style_context.get('palette', 'elegant')}, minimal, clean white background"
+                
+                print(f"🖼️ 正在生成插图 {i}: {p[:50]}...", flush=True)
+                img_url = self.generate_image(p, model_type=model_type, size="1024*1024")
+                
+                if img_url:
+                    local_path = self.download_image_file(img_url, folder=os.path.join(self.workspace, 'assets', 'illustrations'))
+                    if local_path:
+                        state['article_images'].append(local_path)
+                        # 重要：匹配 feishu-card-server 的正则，实时发送每一张预览
+                        print(f"✅ 插入图预览 {i} 已就绪 {local_path}", flush=True)
+                    else:
+                        print(f"❌ 插图 {i} 下载失败。", flush=True)
+                else:
+                    print(f"❌ 插图 {i} 生成异常。", flush=True)
+            
+            self.save_state(state)
             
         return True
 

@@ -124,7 +124,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Invalid JSON")
             return
 
-        # URL verification
+        # 回调鉴权处理 (URL Verification)
         if data.get('type') == 'url_verification' or data.get('challenge'):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -132,41 +132,25 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"challenge": data.get('challenge', '')}).encode('utf-8'))
             return
 
-        # Card button event
-        event = data.get('event', {})
-        message = event.get('message', {})
-        content_str = message.get('content', '{}')
-
-        try:
-            content = json.loads(content_str)
-        except:
-            content = {}
-
-        # Get button value from actions or elements
-        action_value = None
-        actions = content.get('actions', [])
-        for act in actions:
-            if act.get('tag') == 'button' and act.get('value'):
-                action_value = act.get('value')
-                break
-
+        # 检查是否是卡片操作事件 (card.action.trigger)
+        event_header = data.get('header', {})
+        event_type = event_header.get('event_type') or data.get('type')
+        
+        # 兼容两种常见格式：飞书 1.0 事件头和 2.0 嵌套结构
+        action_value = data.get('action', {}).get('value')
+        
         if not action_value:
-            for el in content.get('elements', []):
-                if el.get('tag') == 'action':
-                    for act in el.get('actions', []):
-                        if act.get('tag') == 'button' and act.get('value'):
-                            action_value = act.get('value')
-                            break
-
-        if not action_value:
-            action_value = event.get('action', {}).get('value')
+            # 尝试从老版 event 结构中提取
+            event_body = data.get('event', {})
+            action_value = event_body.get('action', {}).get('value')
 
         if action_value:
-            # 立即返回 200 并携带 Toast，提供秒级反馈感
+            # 🚀 解决 200672: 飞书卡片事件必须返回标准响应
+            # 文档指出：卡片回传交互必须在 3 秒内返回，即使是异步处理也需返回空内容或 toast
             resp_data = {
                 "toast": {
                     "type": "info",
-                    "content": "🚀 动作已受理，正在处理中..."
+                    "content": "📝 指令已受理，AI 正在全力处理中..."
                 }
             }
             self.send_response(200)
@@ -174,10 +158,11 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(resp_data).encode('utf-8'))
             
-            # 线程异步执行真正的重活
+            # 此时响应已发送，飞书客户端会显示 Toast，后台线程继续工作
             threading.Thread(target=self.handle_card_action, args=(action_value,)).start()
             return
 
+        # 如果不是按钮点击，返回通用成功
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -366,7 +351,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
     # ===== Card Action Router =====
 
-    def handle_card_action(self, action_value):
+    def handle_card_action(self, action_value, token=None):
         """Route card button actions to appropriate handlers."""
         try:
             print(f"[DEBUG] handle_card_action: {repr(action_value)}", flush=True)
@@ -403,10 +388,6 @@ class FeishuHandler(BaseHTTPRequestHandler):
                             if topic_id:
                                 self.update_topic_context_by_id(token, topic_id)
                             threading.Thread(target=self.run_insight_and_send_card, args=(token, action_value)).start()
-                            self.send_response(200)
-                            self.send_header("Content-Type", "application/json")
-                            self.end_headers()
-                            self.wfile.write(json.dumps({"code": 0, "msg": "success"}).encode('utf-8'))
                             return
                         # ... handle other types similarly or fall through
                 except Exception as e:
@@ -439,17 +420,17 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 threading.Thread(target=self.run_init_and_send_card, args=(token,)).start()
             elif action_type == 'rewrite':
                 self.send_text(token, "📝 正在为您进行 IP 化改写，生成脚本与长文...\n\n(预计 1-2 分钟，请稍候)")
-                threading.Thread(target=self.run_repurpose_and_send_card, args=(token, action_value)).start()
+                threading.Thread(target=self._run_workflow_async, args=(token, ['python', '-u', 'workflow_controller.py', 'repurpose', action_value])).start()
             elif action_type == 'approve':
                 threading.Thread(target=self.run_approve_and_track, args=(token, action_value)).start()
             elif action_type == 'modify':
                 threading.Thread(target=self.run_modify_and_send_card, args=(token, action_value)).start()
             elif action_type == 'rescript':
                 self.send_text(token, "🔄 正在重新打磨短视频脚本...")
-                threading.Thread(target=self.run_rescript_and_send_card, args=(token, action_value)).start()
+                threading.Thread(target=self._run_workflow_async, args=(token, ['python', '-u', 'workflow_controller.py', 'rescript', action_value])).start()
             elif action_type == 'rearticle':
                 self.send_text(token, "🔄 正在重新润色深度长文...")
-                threading.Thread(target=self.run_rearticle_and_send_card, args=(token, action_value)).start()
+                threading.Thread(target=self._run_workflow_async, args=(token, ['python', '-u', 'workflow_controller.py', 'rearticle', action_value])).start()
             elif action_type.startswith('post'):
                 self.send_text(token, "🚀 正在将内容同步至公众号草稿箱...")
                 threading.Thread(target=self.run_post, args=(token,)).start()
@@ -458,10 +439,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
             elif action_type.startswith('retry_visual_'):
                 mtype = action_type.replace('retry_visual_', '')
                 self.send_text(token, f"🔄 正在尝试使用 [{mtype}] 引擎重新绘图，请稍候...")
-                threading.Thread(target=self.run_final_and_send_card, args=(token,), kwargs={'model': mtype}).start()
+                threading.Thread(target=self._run_workflow_async, args=(token, ['python', '-u', 'workflow_controller.py', 'visuals', '--model', mtype])).start()
             else:
                 print(f"[DEBUG] Unknown action_type: {action_type}", flush=True)
-                # self.send_text(token, f"收到未知操作: {action_type}，请直接告诉我您想做什么")
         except Exception as e:
             print(f"[ERROR] handle_card_action failed: {e}", flush=True)
             import traceback
@@ -1262,32 +1242,22 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 self.save_state(cleanup)
                 return
 
-            # Upload cover image to Feishu
+            # 2. Upload images to Feishu (Cover + Illustrations)
             image_key = ""
             if cover_path and os.path.exists(cover_path):
-                try:
-                    token_data = json.loads(subprocess.run([
-                        'curl', '-s', '-X', 'POST',
-                        'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
-                        '-H', 'Content-Type: application/json',
-                        '-d', json.dumps({"app_id": APP_ID, "app_secret": APP_SECRET})
-                    ], capture_output=True, text=True).stdout)
-                    feishu_token = token_data.get("tenant_access_token", "")
+                image_key = self.upload_to_feishu(cover_path)
 
-                    upload_result = subprocess.run([
-                        'curl', '-s', '-X', 'POST',
-                        'https://open.feishu.cn/open-apis/im/v1/images',
-                        '-H', f'Authorization: Bearer {feishu_token}',
-                        '-F', 'image_type=message',
-                        '-F', f'image=@{cover_path}'
-                    ], capture_output=True, text=True).stdout
-                    upload_data = json.loads(upload_result)
-                    image_key = upload_data.get("data", {}).get("image_key", "")
-                    print(f"[DEBUG] Uploaded cover: {image_key}", flush=True)
-                except Exception as e:
-                    print(f"[WARN] Cover upload failed: {e}", flush=True)
+            article_image_keys = []
+            article_images = state.get('article_images', [])
+            if article_images:
+                self.send_text(token, f"📤 正在上传 {len(article_images)} 张插图到预览...")
+                for p in article_images:
+                    if os.path.exists(p):
+                        key = self.upload_to_feishu(p)
+                        if key: article_image_keys.append(key)
 
-            card = self.build_final_card(image_key, title, content, "AI|迭代|成长", "final_01")
+            # 3. Build and send final card
+            card = self.build_final_card(image_key, title, content, "AI|迭代|成长", "final_01", article_image_keys)
             self.send_card(token, card)
 
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -1309,10 +1279,35 @@ class FeishuHandler(BaseHTTPRequestHandler):
             except:
                 pass
 
-    def build_final_card(self, image_key, title, content, tags, review_id):
-        """Build final publish card."""
+    def upload_to_feishu(self, path):
+        """Helper to upload image to Feishu and return image_key."""
+        try:
+            token_data = json.loads(subprocess.run([
+                'curl', '-s', '-X', 'POST',
+                'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+                '-H', 'Content-Type: application/json',
+                '-d', json.dumps({"app_id": APP_ID, "app_secret": APP_SECRET})
+            ], capture_output=True, text=True).stdout)
+            feishu_token = token_data.get("tenant_access_token", "")
+
+            upload_result = subprocess.run([
+                'curl', '-s', '-X', 'POST',
+                'https://open.feishu.cn/open-apis/im/v1/images',
+                '-H', f'Authorization: Bearer {feishu_token}',
+                '-F', 'image_type=message',
+                '-F', f'image=@{path}'
+            ], capture_output=True, text=True).stdout
+            upload_data = json.loads(upload_result)
+            return upload_data.get("data", {}).get("image_key", "")
+        except Exception as e:
+            print(f"[WARN] Upload failed for {path}: {e}", flush=True)
+            return ""
+
+    def build_final_card(self, image_key, title, content, tags, review_id, article_image_keys=None):
+        """Build final publish card with cover and multiple illustrations."""
         elements = []
 
+        # Cover
         if image_key:
             elements.append({"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": "封面图"}})
 
@@ -1324,9 +1319,14 @@ class FeishuHandler(BaseHTTPRequestHandler):
         })
 
         if content_clean:
-            for i in range(0, len(content_clean), 800):
-                chunk = content_clean[i:i+800]
-                elements.append({"tag": "div", "text": {"tag": "lark_md", "content": chunk}})
+            main_text = content_clean[:2000] + ("..." if len(content_clean) > 2000 else "")
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": main_text}})
+
+        # 🎨 插图预览已通过“成一张发一张”模式独立发出，最终稿保持简洁
+        # 若需要在此处显示，可以保留。但根据要求，插图应在最终稿中省略预览或改为列表
+        if article_image_keys:
+            elements.append({"tag": "hr"})
+            elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"🖼️ 文章包含 {len(article_image_keys)} 张专业配图，已插入相应段落"}]})
 
         elements.append({"tag": "hr"})
         elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": tags}]})
