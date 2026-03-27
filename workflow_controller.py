@@ -504,12 +504,61 @@ class SelfMediaController:
         sp = os.path.join(dr_root, f"video_script_{ts}.md")
         with open(sp, "w", encoding='utf-8') as f: f.write(vs if vs else "未生成脚本")
 
+        # ==========================
+        # 3.5 md2wechat-skill 极致排版渲染
+        # ==========================
+        import yaml
+        import httpx
+        theme_map = {
+            "hardcore": "cyber.yaml",
+            "insight": "ocean-calm.yaml",
+            "news": "bytedance.yaml",
+            "emotional": "autumn-warm.yaml",
+            "risk": "bold-red.yaml",
+            "tool": "apple.yaml",
+            "growth": "spring-fresh.yaml",
+            "crossover": "elegant-gold.yaml"
+        }
+        theme_file = theme_map.get(cat, "default.yaml") if 'cat' in locals() else "default.yaml"
+        theme_path = os.path.join(self.workspace, "wechat_themes", theme_file)
+        
+        html_path = ""
+        if os.path.exists(theme_path) and api_key:
+            print(f"✨ 检测到 md2wechat-skill 引擎，根据文章分类自动选取主题：[{theme_file}]")
+            try:
+                with open(theme_path, 'r', encoding='utf-8') as tf:
+                    theme_cfg = yaml.safe_load(tf)
+                    html_prompt = theme_cfg.get('prompt', '')
+                
+                if html_prompt:
+                    print(f"🎨 正在调度大模型进行 HTML 渲染，这可能需要几十秒...")
+                    with httpx.Client(timeout=300) as cl:
+                        md_to_render = f"# {nt}\n\n{ac}" if nt else ac
+                        r = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
+                            json={"model": mid, "messages": [{"role": "system", "content": html_prompt}, {"role": "user", "content": f"内容：\n\n{md_to_render}"}], "temperature": 0.2})
+                        html_content = r.json()["choices"][0]["message"]["content"]
+                        
+                        html_content = html_content.strip()
+                        if html_content.startswith("```html"): html_content = html_content[7:]
+                        elif html_content.startswith("```"): html_content = html_content[3:]
+                        if html_content.endswith("```"): html_content = html_content[:-3]
+                        
+                        hp = os.path.join(dr_root, f"article_{ts}.html")
+                        with open(hp, "w", encoding='utf-8') as hf:
+                            hf.write(html_content.strip())
+                        html_path = hp
+                        print(f"✅ HTML 渲染完成，已生成 {hp}")
+            except Exception as e:
+                print(f"❌ HTML 渲染失败: {e}")
+
         print(f"✅ 成果存档 [保存文件]：")
         print(f"   article_path={ap}")
         print(f"   script_path={sp}")
+        if html_path:
+            print(f"   html_path={html_path}")
         
         state['current_step'] = "waiting_for_content_review"
-        state['draft_file'] = ap
+        state['draft_file'] = html_path if html_path else ap
         state['video_script'] = sp
         state['topic_context'] = selected
         if nt: state['topic_context']['title'] = nt
@@ -815,37 +864,69 @@ class SelfMediaController:
             with open(draft_file, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            # Insert images evenly among H3 headings or blank lines
-            if article_images and "![插图]" not in content:
-                lines = content.split('\n')
-                insert_points = [i for i, line in enumerate(lines) if line.startswith('### ')]
-                if len(insert_points) < len(article_images):
-                    # fallback to double newlines if not enough headings
-                    insert_points = [i for i, line in enumerate(lines) if line.strip() == '']
-                
-                # Deduplicate and sort points
-                insert_points = sorted(list(set(insert_points)))
-                
-                if insert_points:
-                    for img_idx, img_path in enumerate(article_images):
-                        pt_idx = (img_idx * len(insert_points)) // len(article_images)
-                        if pt_idx < len(insert_points):
-                            line_idx = insert_points[pt_idx] + img_idx * 2 # offset for previous insertions
-                            lines.insert(line_idx, f'\n![插图]({os.path.abspath(img_path)})\n')
-                    
-                    content = '\n'.join(lines)
+            is_html = str(draft_file).endswith('.html')
+            
+            if is_html:
+                if article_images:
+                    for i, img_path in enumerate(article_images):
+                        ph1 = f"<!-- IMG:{i} -->"
+                        ph2 = f"&lt;!-- IMG:{i} --&gt;"
+                        new_img_tag = f'<img src="XIMGPH_{i}" data-local-path="{os.path.abspath(img_path)}" style="max-width: 100%; height: auto; display: block; margin: 20px auto;" />'
+                        
+                        if ph1 in content or ph2 in content:
+                            content = content.replace(ph1, new_img_tag).replace(ph2, new_img_tag)
+                        else:
+                            # 如果没找到占位符，尝试将其追加到 </section> 或 </div> 前
+                            if "</section>" in content:
+                                content = content.rsplit("</section>", 1)[0] + f"\n{new_img_tag}\n</section>" + content.rsplit("</section>", 1)[1]
+                            elif "</div>" in content:
+                                content = content.rsplit("</div>", 1)[0] + f"\n{new_img_tag}\n</div>" + content.rsplit("</div>", 1)[1]
+                            else:
+                                content += f"\n{new_img_tag}"
                     with open(draft_file, 'w', encoding='utf-8') as f:
                         f.write(content)
+            else:
+                # Insert images evenly among H3 headings or blank lines
+                if article_images and "![插图]" not in content:
+                    lines = content.split('\n')
+                    insert_points = [i for i, line in enumerate(lines) if line.startswith('### ')]
+                    if len(insert_points) < len(article_images):
+                        # fallback to double newlines if not enough headings
+                        insert_points = [i for i, line in enumerate(lines) if line.strip() == '']
+                    
+                    # Deduplicate and sort points
+                    insert_points = sorted(list(set(insert_points)))
+                    
+                    if insert_points:
+                        for img_idx, img_path in enumerate(article_images):
+                            pt_idx = (img_idx * len(insert_points)) // len(article_images)
+                            if pt_idx < len(insert_points):
+                                line_idx = insert_points[pt_idx] + img_idx * 2 # offset for previous insertions
+                                lines.insert(line_idx, f'\n![插图]({os.path.abspath(img_path)})\n')
+                        
+                        content = '\n'.join(lines)
+                        with open(draft_file, 'w', encoding='utf-8') as f:
+                            f.write(content)
 
             # Build script arguments
             npx_cmd = "npx.cmd" if os.name == "nt" else "npx"
             baoyu_dir = os.path.join(self.workspace, "baoyu-post-to-wechat")
+            
+            script_args = [npx_cmd, "-y", "bun"]
             if method == "browser":
                 script_path = os.path.join(baoyu_dir, "scripts", "wechat-article.ts")
-                script_args = [npx_cmd, "-y", "bun", script_path, "--markdown", draft_file, "--theme", "default"]
+                script_args.append(script_path)
             else:
                 script_path = os.path.join(baoyu_dir, "scripts", "wechat-api.ts")
-                script_args = [npx_cmd, "-y", "bun", script_path, draft_file, "--theme", "default"]
+                script_args.append(script_path)
+                
+            if is_html:
+                script_args.extend(["--html", draft_file])
+            else:
+                if method == "browser":
+                    script_args.extend(["--markdown", draft_file, "--theme", "default"])
+                else:
+                    script_args.extend([draft_file, "--theme", "default"])
                 
             if cover_path and os.path.exists(cover_path):
                 script_args.extend(["--cover", os.path.abspath(cover_path)])
