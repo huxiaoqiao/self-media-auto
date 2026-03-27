@@ -724,80 +724,85 @@ class SelfMediaController:
         except Exception: return False
 
     def run_visuals(self, model_type="seedream"):
+        """钢铁意志视觉引擎：绝对不中断，成一张推一张"""
         state = self.load_state()
+        # 强制初始化并清空之前的图片记录（防止重试时图片不断追加）
+        state['article_images'] = []
+        state['cover_image'] = ""
+        self.save_state(state)
+        
         draft_file = state.get('draft_file')
         if not draft_file or not os.path.exists(draft_file): 
-            print("❌ 未找到改写草稿，请先执行改写步骤。")
+            print("[FEISHU_STATUS] ERR=未找到草稿文件", flush=True)
             return False
-        
-        print("\n🎨 开启视觉增强分析...")
+            
+        print(f"\n🎨 [视觉导演] 开启弹性生成 (引擎: {model_type})...", flush=True)
         with open(draft_file, "r", encoding="utf-8") as f: content = f.read()
-        
-        # 1. 视觉方案分析
+
+        # 1. 方案分析
         plan = self.analyze_visuals(content)
         if not plan:
-            print("⚠️ 视觉方案分析失败，将使用默认方案。")
-            plan = {"cover": {"prompt": "大胡老师的数字花园风格封面图"}, "illustrations": []}
-            
-        # 2. 生成封面
-        cover_prompt = plan.get("cover", {}).get("prompt", "封面图")
-        print(f"🖼️ 正在构思封面: {cover_prompt[:50]}...")
-        cover_url = self.generate_image(cover_prompt, model_type=model_type, size="3072x1308")
-        
-        if cover_url:
-            local_cover = self.download_image_file(cover_url, folder=os.path.join(self.workspace, 'assets', 'covers'))
-            if local_cover:
-                state['cover_image'] = local_cover
-                self.save_state(state)
-                # 重要：此打印会被 feishu-card-server 捕获并发送预览
-                print(f"✅ 封面图预览已就绪 {local_cover}", flush=True)
-            else:
-                print("❌ 封面图下载失败。", flush=True)
-        else:
-            print("❌ 封面图生成接口响应异常。", flush=True)
+            print("[FEISHU_STATUS] WARN=分析方案失败，使用兜底图", flush=True)
+            plan = {"cover": {"prompt": "大胡老师的数字花园"}, "illustrations": []}
 
-        # 3. 生成文章插图 (Baoyu Article Illustrator 逻辑)
-        illustrate_images = plan.get("illustrations", [])
-        if illustrate_images:
-            print(f"\n🎨 发现 {len(illustrate_images)} 处插图建议，正在并行生成...", flush=True)
-            state['article_images'] = []
+        # 2. 生成封面 (容错机制)
+        try:
+            cp = plan.get("cover", {}).get("prompt", "封面图")
+            print(f"🖼️ [封面] 准备构建: {cp[:30]}...", flush=True)
+            c_url = self.generate_image(cp, model_type=model_type, size="3072x1308")
+            if c_url:
+                l_cover = self.download_image_file(c_url, folder=os.path.join(self.workspace, 'assets', 'covers'))
+                if l_cover:
+                    state['cover_image'] = l_cover
+                    self.save_state(state)
+                    # 钢铁级实时推送协议
+                    print(f"[FEISHU_PREVIEW] TYPE=COVER PATH={l_cover}", flush=True)
+                else:
+                    print("[FEISHU_STATUS] ERR=封面下载失败", flush=True)
+            else:
+                print("[FEISHU_STATUS] WARN=封面API返回为空(风控?)", flush=True)
+        except Exception as e:
+            print(f"[FEISHU_STATUS] ERR=封面流程异常:{str(e)[:50]}", flush=True)
+
+        # 3. 生成插图 (单图闭环)
+        ills = plan.get("illustrations", [])
+        if ills:
+            print(f"\n🎨 [排期] 共有 {len(ills)} 张插图待产...", flush=True)
             
-            # 由于当前环境限制，采用顺序生成。如果性能需要，未来可改为线程池。
-            for i, img_info in enumerate(illustrate_images, 1):
-                p = img_info.get("prompt", "")
+            ratio_map = {"16:9": "2560x1440", "4:3": "2224x1668", "1:1": "1920x1920", "3:4": "1668x2224"}
+
+            for i, info in enumerate(ills, 1):
+                p = info.get("prompt", "")
                 if not p: continue
                 
-                # 注入风格统一指令
-                style_context = plan.get("cover", {})
-                p = f"{p}, style: {style_context.get('rendering', 'flat-vector')}, palette: {style_context.get('palette', 'elegant')}, minimal, clean white background"
+                # 注入风格统一
+                style = plan.get("cover", {}).get('rendering', 'flat-vector')
+                p = f"{p}, style: {style}, minimalism, studio light, ultra hd"
                 
-                # 动态比例计算逻辑：确保像素量 > 368.64万 (Seedream 4.5 硬门槛)
-                ratio_map = {
-                    "16:9": "2560x1440",
-                    "4:3": "2224x1668",
-                    "1:1": "1920x1920",
-                    "3:4": "1668x2224",
-                    "2.35:1": "3072x1308"
-                }
-                target_ratio = img_info.get("ratio", "1:1")
-                target_size = ratio_map.get(target_ratio, "1920x1920")
+                ratio = info.get("ratio", "1:1")
+                size = ratio_map.get(ratio, "1920x1920")
 
-                print(f"🖼️ 正在生成插图 {i} (比例 {target_ratio}): {p[:50]}...", flush=True)
-                img_url = self.generate_image(p, model_type=model_type, size=target_size)
+                print(f"🖼️ [进度 {i}/{len(ills)}] 启动渲染 ({ratio})...", flush=True)
                 
-                if img_url:
-                    local_path = self.download_image_file(img_url, folder=os.path.join(self.workspace, 'assets', 'illustrations'))
-                    if local_path:
-                        state['article_images'].append(local_path)
-                        # 重要：匹配 feishu-card-server 的正则，实时发送每一张预览
-                        print(f"✅ 插入图预览 {i} 已就绪 {local_path}", flush=True)
+                try:
+                    i_url = self.generate_image(p, model_type=model_type, size=size)
+                    if i_url:
+                        l_path = self.download_image_file(i_url, folder=os.path.join(self.workspace, 'assets', 'illustrations'))
+                        if l_path:
+                            state['article_images'].append(l_path)
+                            self.save_state(state)
+                            # 钢铁级实时推送协议
+                            print(f"[FEISHU_PREVIEW] TYPE=ILLUS INDEX={i} PATH={l_path}", flush=True)
+                        else:
+                            print(f"[FEISHU_STATUS] ERR=插图{i}下载失败", flush=True)
                     else:
-                        print(f"❌ 插图 {i} 下载失败。", flush=True)
-                else:
-                    print(f"❌ 插图 {i} 生成异常。", flush=True)
+                        print(f"[FEISHU_STATUS] WARN=插图{i}API无产出", flush=True)
+                except Exception as ie:
+                    print(f"[FEISHU_STATUS] ERR=插图{i}异常:{str(ie)[:50]}", flush=True)
             
             self.save_state(state)
             
+        print(f"\n[FEISHU_STATUS] DONE=已产出 {len(state.get('article_images', []))} 张图", flush=True)
         return True
 
     def run_post(self, method="api"):

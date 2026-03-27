@@ -233,11 +233,29 @@ class FeishuHandler(BaseHTTPRequestHandler):
             if not image_key:
                 return
 
-            payload = {
-                "receive_id": DEFAULT_RECEIVE_ID,
-                "msg_type": "image",
-                "content": json.dumps({"image_key": image_key})
-            }
+            if caption:
+                template = "blue" if "插图" in caption else "purple"
+                card_content = {
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "template": template,
+                        "title": {"tag": "plain_text", "content": caption}
+                    },
+                    "elements": [
+                        {"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": caption}}
+                    ]
+                }
+                payload = {
+                    "receive_id": DEFAULT_RECEIVE_ID,
+                    "msg_type": "interactive",
+                    "content": json.dumps(card_content, ensure_ascii=False)
+                }
+            else:
+                payload = {
+                    "receive_id": DEFAULT_RECEIVE_ID,
+                    "msg_type": "image",
+                    "content": json.dumps({"image_key": image_key})
+                }
             req = urllib.request.Request(
                 "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
                 data=json.dumps(payload).encode('utf-8'),
@@ -476,20 +494,58 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     print(f"[workflow] {clean_line}", flush=True)
                     full_output.append(clean_line)
                     
-                    # 实现实时流式预览 (出一张发一张)
-                    if "✅ 封面图预览已就绪" in clean_line:
-                        path_match = re.search(r"(assets[\\/].+\.(?:jpg|jpeg|png|webp))", clean_line)
-                        if path_match:
-                            img_path = os.path.join(WORKDIR, path_match.group(1))
-                            print(f"[DEBUG] Found cover: {img_path}", flush=True)
-                            self.send_text(token, "🖼️ 封面图已就绪，正在发送预览...")
-                            self.send_image_preview(token, img_path)
-                    
-                    if "已就绪" in clean_line and ("插图" in clean_line or "插入图" in clean_line):
-                        path_match = re.search(r"(assets[\\/].+\.(?:jpg|jpeg|png|webp))", clean_line)
-                        if path_match:
-                            img_path = os.path.join(WORKDIR, path_match.group(1))
-                            self.send_image_preview(token, img_path)
+                    # 绝对稳健协议解析：[FEISHU_PREVIEW] TYPE=XXX PATH=YYY
+                    if "[FEISHU_PREVIEW]" in clean_line:
+                        try:
+                            # 1. 提取 PATH= 之后的部分
+                            if "PATH=" in clean_line:
+                                # 彻底清洗：先去掉两端空格，再去掉可能存在的引号
+                                raw_path = clean_line.split("PATH=")[1].strip()
+                                # 针对 Windows 终端黏连问题：如果路径后面跟着其他协议标记，截断它
+                                if " [FEISHU" in raw_path:
+                                    raw_path = raw_path.split(" [FEISHU")[0].strip()
+                                
+                                # 处理引号
+                                clean_path = raw_path.replace('"', '').replace("'", "")
+                                
+                                # 2. 如果是相对路径，强制转绝对
+                                if not os.path.isabs(clean_path):
+                                    if "assets" in clean_path:
+                                        # 针对可能的 assets 前缀偏移
+                                        as_idx = clean_path.find("assets")
+                                        clean_path = os.path.join(WORKDIR, clean_path[as_idx:])
+                                    else:
+                                        clean_path = os.path.join(WORKDIR, clean_path)
+
+                                # 3. 规范化斜杠 (Windows 兼容性)
+                                clean_path = os.path.normpath(clean_path)
+
+                                if os.path.exists(clean_path):
+                                    print(f"[DEBUG] 🚀 物理校验成功: {clean_path}", flush=True)
+                                    if "TYPE=COVER" in clean_line:
+                                        self.send_image_preview(token, clean_path, "🖼️ 封面图已就绪")
+                                    elif "TYPE=ILLUS" in clean_line:
+                                        import re
+                                        m = re.search(r'INDEX=(\d+)', clean_line)
+                                        idx = m.group(1) if m else "?"
+                                        self.send_image_preview(token, clean_path, f"🖼️ 插图 {idx} 已就绪")
+                                    else:
+                                        self.send_image_preview(token, clean_path, "🖼️ 图片已就绪")
+                                else:
+                                    print(f"[DEBUG] ⚠️ 路径指向的文件不存在: {clean_path}", flush=True)
+                        except Exception as pe:
+                            print(f"[DEBUG] ❌ 协议解析捕获异常: {pe}", flush=True)
+
+                    # 状态监控协议
+                    elif "[FEISHU_STATUS]" in clean_line:
+                        try:
+                            status_msg = clean_line.split("FEISHU_STATUS]")[-1].strip().replace('"', '').replace("'", "")
+                            if "ERR=" in status_msg or "WARN=" in status_msg:
+                                self.send_text(token, f"🔔 {status_msg}")
+                            elif "DONE=" in status_msg:
+                                # 任务结束最后推一个总结
+                                pass 
+                        except: pass
 
             process.wait()
             output_str = "\n".join(full_output)
@@ -1260,18 +1316,49 @@ class FeishuHandler(BaseHTTPRequestHandler):
             img_count = 0
             any_image_generated = False
             for line in proc.stdout:
-                print(f"[visuals] {line}", end='', flush=True)
-                m = re.search(r'cover.*?就位:\s*(.+\.(?:jpg|jpeg|png))', line)
-                if m:
-                    img_count += 1
-                    any_image_generated = True
-                    self.send_image_preview(token, m.group(1).strip(), f"🖼️ 封面图 {img_count} 已就位")
+                clean_line = line.strip()
+                if not clean_line:
                     continue
-                m = re.search(r'插入图\s*(\d+)\s*已就位\s*(.+\.(?:jpg|jpeg|png))', line)
-                if m:
-                    img_count += 1
-                    any_image_generated = True
-                    self.send_image_preview(token, m.group(2).strip(), f"🖼️ 插图 {m.group(1)} 已就位")
+                print(f"[visuals] {clean_line}", flush=True)
+
+                if "[FEISHU_PREVIEW]" in clean_line:
+                    try:
+                        if "PATH=" in clean_line:
+                            raw_path = clean_line.split("PATH=")[1].strip()
+                            if " [FEISHU" in raw_path:
+                                raw_path = raw_path.split(" [FEISHU")[0].strip()
+                            clean_path = raw_path.replace('"', '').replace("'", "")
+                            
+                            if not os.path.isabs(clean_path):
+                                if "assets" in clean_path:
+                                    as_idx = clean_path.find("assets")
+                                    clean_path = os.path.join(WORKDIR, clean_path[as_idx:])
+                                else:
+                                    clean_path = os.path.join(WORKDIR, clean_path)
+
+                            clean_path = os.path.normpath(clean_path)
+
+                            if os.path.exists(clean_path):
+                                img_count += 1
+                                any_image_generated = True
+                                if "TYPE=COVER" in clean_line:
+                                    self.send_image_preview(token, clean_path, "🖼️ 封面图已就绪")
+                                elif "TYPE=ILLUS" in clean_line:
+                                    import re
+                                    m = re.search(r'INDEX=(\d+)', clean_line)
+                                    idx = m.group(1) if m else "?"
+                                    self.send_image_preview(token, clean_path, f"🖼️ 插图 {idx} 已就绪")
+                                else:
+                                    self.send_image_preview(token, clean_path, "🖼️ 图片已就绪")
+                    except Exception as pe:
+                        print(f"[DEBUG] ❌ 协议解析捕获异常: {pe}", flush=True)
+
+                elif "[FEISHU_STATUS]" in clean_line:
+                    try:
+                        status_msg = clean_line.split("FEISHU_STATUS]")[-1].strip().replace('"', '').replace("'", "")
+                        if "ERR=" in status_msg or "WARN=" in status_msg:
+                            self.send_text(token, f"🔔 {status_msg}")
+                    except: pass
 
             proc.wait()
 
