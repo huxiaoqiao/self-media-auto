@@ -146,20 +146,25 @@ class FeishuHandler(BaseHTTPRequestHandler):
             action_value = event_body.get('action', {}).get('value')
 
         if action_value:
-            # 🚀 解决 200672: 飞书卡片事件必须返回标准响应
-            # 文档指出：卡片回传交互必须在 3 秒内返回，即使是异步处理也需返回空内容或 toast
+            # 🚀 解决 200672: 飞书卡片返回格式极其严格
+            # 必须提供合规的 toast 字典，并且增加 Content-Length 防止底层网关截断
             resp_data = {
                 "toast": {
                     "type": "info",
-                    "content": "📝 指令已受理，AI 正在全力处理中..."
+                    "content": "指令已下达，正在极速拉取中...",
+                    "i18n": {
+                        "zh_cn": "指令已下达，正在极速拉取中..."
+                    }
                 }
             }
+            resp_body = json.dumps(resp_data).encode('utf-8')
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp_body)))
             self.end_headers()
-            self.wfile.write(json.dumps(resp_data).encode('utf-8'))
+            self.wfile.write(resp_body)
             
-            # 此时响应已发送，飞书客户端会显示 Toast，后台线程继续工作
+            # 此时响应已发送，Feishu 将确认接收，后台线程继续工作
             threading.Thread(target=self.handle_card_action, args=(action_value,)).start()
             return
 
@@ -439,17 +444,15 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 threading.Thread(target=self.run_init_and_send_card, args=(token,)).start()
             elif action_type == 'rewrite':
                 self.send_text(token, "📝 正在为您进行 IP 化改写，生成脚本与长文...\n\n(预计 1-2 分钟，请稍候)")
-                threading.Thread(target=self._run_workflow_async, args=(token, ['python', '-u', 'workflow_controller.py', 'repurpose', action_value])).start()
+                threading.Thread(target=self.run_repurpose_and_send_card, args=(token, action_value)).start()
             elif action_type == 'approve':
                 threading.Thread(target=self.run_approve_and_track, args=(token, action_value)).start()
             elif action_type == 'modify':
                 threading.Thread(target=self.run_modify_and_send_card, args=(token, action_value)).start()
             elif action_type == 'rescript':
-                self.send_text(token, "🔄 正在重新打磨短视频脚本...")
-                threading.Thread(target=self._run_workflow_async, args=(token, ['python', '-u', 'workflow_controller.py', 'rescript', action_value])).start()
+                threading.Thread(target=self.run_rescript_and_send_card, args=(token, action_value)).start()
             elif action_type == 'rearticle':
-                self.send_text(token, "🔄 正在重新润色深度长文...")
-                threading.Thread(target=self._run_workflow_async, args=(token, ['python', '-u', 'workflow_controller.py', 'rearticle', action_value])).start()
+                threading.Thread(target=self.run_rearticle_and_send_card, args=(token, action_value)).start()
             elif action_type.startswith('post'):
                 self.send_text(token, "🚀 正在将内容同步至公众号草稿箱...")
                 threading.Thread(target=self.run_post, args=(token,)).start()
@@ -672,6 +675,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
                         print(f"[DEBUG] Saved {len(topics)} fresh candidates to state", flush=True)
                     except Exception as e:
                         print(f"[WARN] Failed to save candidates to state: {e}", flush=True)
+                        
+                    # 关键修复：确保强制刷新时，即使解析了15条，也只往飞书卡片中推送第一页的数量（5条）
+                    topics = topics[:5]
 
                 # ALWAYS send as batch card
                 batch_card = self.build_topic_list_card(topics, "AI")

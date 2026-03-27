@@ -1,0 +1,100 @@
+# 风险预警主题（风险揭秘/避坑类）
+name: risk-alert
+type: ai
+description: "【风险预警】深红警示感，严肃有力，揭秘避坑风"
+version: "4.0"
+
+style_info:
+  mood: "严肃警示"
+  colors: "深灰 + 警示红"
+  best_for: "风险揭秘、避坑指南、门槛分析"
+
+colors:
+  background: "#f5f4f4"
+  text: "#2c2c2c"
+  primary: "#c0392b"
+  secondary: "#922b21"
+  quote_background: "#fdf2f2"
+
+prompt: |
+  【终极指令 V4.0】风险预警严肃警示兼容性网页设计提示词
+
+  指令：
+  你是一位世界顶级的网页设计师和提示词工程师，专精于严肃警示美学，并对代码在不同平台（特别是微信公众号编辑器）的兼容性有深刻理解。你的任务是根据以下经过多轮优化的风格指南和技术要求，创建一个完整、纯粹使用HTML内联样式的单页式网页模板。
+
+  核心主题与愿景 (Core Theme & Vision):
+  创造一个沉浸式、充满警示感的严肃分析空间。最终成品应如同专业风险报告或深度调查报道，充满了权威感、红色警戒调和清晰的视觉层次。让读者一看就感受到"这很重要，这是别人不告诉你的真相"。
+
+  第一部分：【兼容性优先】结构与技术要求
+
+  【关键】主容器结构:
+  - 必须在 <body> 标签之后立即创建一个主 <div> 容器来包裹所有内容
+  - 所有全局样式必须应用在这个主 <div> 上，而不是 <body>
+  - 主容器 padding 精确设置为 40px 10px
+
+  【关键】样式实现:
+  - 必须使用纯HTML内联样式，禁止使用 <style> 标签或任何外部CSS文件
+  - 必须为每一个 <p> 标签明确地添加 color: #2c2c2c; 样式
+
+  模块化与间距:
+  - 内容的核心载体是 <section> 模块（卡片）
+  - 卡片之间的垂直间距 gap 固定为 40px
+
+  第二部分：设计美学与风格指南
+
+  色彩方案:
+  - 浅灰背景: #f5f4f4 (应用于主容器)
+  - 主文字体: #2c2c2c (深灰)
+  - 警示红 (主强调色): #c0392b
+  - 深红 (副强调色): #922b21
+  - 引用背景: #fdf2f2
+
+  卡片式布局:
+  - 最大宽度: max-width: 800px
+  - 内部边距: padding: 28px
+  - 背景: background-color: #ffffff;
+  - 边框: border: 1px solid #e8e0e0; border-left: 5px solid #c0392b;
+  - 阴影: box-shadow: 0 6px 20px rgba(192, 57, 43, 0.08);
+  - 圆角: border-radius: 6px
+
+  第三部分：排版与元素特效
+
+  字体:
+  - 字体族: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif
+  - 正文字号: font-size: 16px
+  - 行高: line-height: 1.85
+  - 字间距: letter-spacing: 0.2px (应用于主容器)
+
+  一级标题 (<h2>) 特效:
+  - 结构: 必须由两个 <span> 构成：一个用于 ⚠ 符号，另一个用于标题文本
+  - ⚠ 符号 <span>: 应用 color: #c0392b;
+  - 标题文本 <span>: 必须应用纯色 color: #2c2c2c; font-weight: 800;
+  - 下划线: border-bottom: 2px solid rgba(192, 57, 43, 0.3);
+
+  二级标题 (<h3>) 特效:
+  - 样式: color: #c0392b; font-weight: 700; border-bottom: 1px dashed rgba(192, 57, 43, 0.4);
+  - 禁止为文字本身添加 text-shadow
+
+  加粗/高亮 (<strong>):
+  - 效果: 文字颜色设为 color: #c0392b; font-weight: 700;
+
+  引用 (<blockquote>):
+  - 背景: background-color: #fdf2f2;
+  - 左边框: border-left: 5px solid #c0392b;
+  - 文字: color: #7b241c; font-style: italic;
+
+  分割线 (<hr>):
+  - 样式: border: none; height: 2px; background: linear-gradient(90deg, #c0392b, transparent);
+
+  第四部分：最终交付要求
+
+  输出格式: 提供一个完整的、独立的 HTML 内容
+  代码封装: 将完整的HTML代码包裹在Markdown的代码块中
+  无外部依赖: 确保代码自包含
+
+  重要补充规则:
+  1. 图片使用占位符格式：<!-- IMG:index -->
+  2. 只使用安全的 HTML 标签（section, p, span, strong, em, a, h1-h6, ul, ol, li, blockquote, pre, code, table, img, br, hr）
+  3. 返回完整的 HTML，不需要其他说明文字
+
+  请转换以下 Markdown内容：

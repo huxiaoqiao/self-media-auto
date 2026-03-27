@@ -211,7 +211,7 @@ class SelfMediaController:
         print("✅ 飞书同步参数已准备完成")
         return result
 
-    def run_discovery(self, keyword=None):
+    def run_discovery(self, keyword=None, refresh=False, last_id=None):
         """
         [卡点 1 之前] 嗅探系统 (次幂数据版)
         抓取微信爆款文章的热点。
@@ -300,8 +300,12 @@ class SelfMediaController:
         print("📥 [2/2] 正在拉取爆款文章列表...")
         candidates = []
         try:
+            payload = {"category": cimi_category_en, "read_num": 1000}
+            if last_id:
+                payload["last_id"] = last_id
+            
             articles_resp = requests.post(f"{api_base}/api/v2/hot/articles?access_token={access_token}", 
-                                         json={"category": cimi_category_en, "read_num": 1000}, headers=headers, timeout=15)
+                                         json=payload, headers=headers, timeout=15)
             articles_data = articles_resp.json()
             items = articles_data.get("data", {}).get("items", [])
             for item in items[:15]:
@@ -310,6 +314,11 @@ class SelfMediaController:
                     "likes": int(item.get("like_num", 0)), "comments": int(item.get("read_num", 0)),
                     "author": item.get("nickname", "未知公众号"), "score": int(item.get("hotness", 0))
                 })
+            
+            # Save pagination cursor if available
+            new_last_id = articles_data.get("data", {}).get("last_id")
+            if new_last_id:
+                state['cimi_last_id'] = str(new_last_id)
         except Exception as e:
             print(f"❌ 请求获取文章接口时发生异常: {e}")
             sys.exit(1)
@@ -317,12 +326,35 @@ class SelfMediaController:
         print(f"\n=== ✨ 今日推荐 Top {len(candidates)} 爆款选题 === (数据来源: 次幂)")
         for idx, c in enumerate(candidates, 1):
             print(f"{idx}. [{c['source']}] [{c['title']}]({c['id']})")
+            print(f"👤 {c['author']} | 👁️ 阅读: {c.get('comments', 0)} | 👍 赞: {c.get('likes', 0)}")
         print("===================================")
         
         state['current_step'] = "discovery_done"
         state['last_sync'] = datetime.now().isoformat()
         state['candidates'] = candidates
         self.save_state(state)
+
+    def run_next_discovery(self):
+        state = self.load_state()
+        candidates = state.get('last_candidates', [])
+        page_index = state.get('candidates_page_index', 1)
+        page_size = state.get('candidates_page_size', 5)
+        
+        start_idx = (page_index - 1) * page_size
+        end_idx = start_idx + page_size
+        page_items = candidates[start_idx:end_idx]
+        
+        print(f"\n=== ✨ 今日推荐 (第 {page_index} 页) === (数据来源: 缓存)")
+        for idx, c in enumerate(page_items, start_idx + 1):
+            source = c.get('source', '微信公众号')
+            title = c.get('title', '未知文章')
+            url = c.get('id', '')
+            author = c.get('author', '未知')
+            reads = c.get('comments', c.get('read', 0))
+            likes = c.get('likes', 0)
+            print(f"{idx}. [{source}] [{title}]({url})")
+            print(f"👤 {author} | 👁️ 阅读: {reads} | 👍 赞: {likes}")
+        print("===================================")
 
     def _extract_article_content(self, article_url, selected=None):
         """通用素材提取服务：支持网页解析、次幂 API 保底、抖音文案提取。"""
@@ -410,9 +442,13 @@ class SelfMediaController:
                         selected = c
                         break
         
-        # 3. 兜底
+        # 3. 兜底与当前上下文沿用
         if not selected:
-             selected = {"id": str(topic_id_or_cmd), "title": "自定义素材", "source": "自定义"}
+            if (topic_id_or_cmd is None or str(topic_id_or_cmd).strip() == "None" or str(topic_id_or_cmd).strip() == "") and state.get('topic_context'):
+                selected = state['topic_context']
+                print(f"✅ 从当前会话上下文恢复素材: {selected.get('title')}")
+            else:
+                selected = {"id": str(topic_id_or_cmd), "title": "自定义素材", "source": "自定义"}
 
         title_val = selected.get("title", "未命名素材")
         source_val = selected.get("source", "微信")
@@ -456,7 +492,9 @@ class SelfMediaController:
                 cat = "insight"
                 if conf:
                     print(f"🧠 [1/2] 意图路由分析...")
-                    ci = conf.get("classifier_prompt", "").format(preview_content=raw_content[:1500])
+                    raw_ci = conf.get("classifier_prompt", "")
+                    if isinstance(raw_ci, list): raw_ci = "\n".join(raw_ci)
+                    ci = raw_ci.format(preview_content=raw_content[:1500])
                     try:
                         with httpx.Client(timeout=40) as cl:
                             cr = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
@@ -466,7 +504,9 @@ class SelfMediaController:
                     except Exception: pass
                     print(f"✨ 场景适配：【{conf['templates'][cat]['name']}】")
                     
-                    final_pmt = conf["templates"].get(cat, conf["templates"]["insight"])["prompt"].format(author_ip_name=ip)
+                    raw_prompt = conf["templates"].get(cat, conf["templates"]["insight"])["prompt"]
+                    if isinstance(raw_prompt, list): raw_prompt = "\n".join(raw_prompt)
+                    final_pmt = raw_prompt.format(author_ip_name=ip, wechat_id=os.environ.get("AUTHOR_WECHAT_ID", "此处添加微信号").strip("'\""))
                     
                     print(f"📝 [2/2] 深度创作中...")
                     with httpx.Client(timeout=300) as cl:
@@ -487,14 +527,21 @@ class SelfMediaController:
         os.makedirs(dr_root, exist_ok=True)
         
         vs, ac, nt = "", final_content, ""
-        if "## 第二部分" in final_content:
-            parts = final_content.split("## 第二部分")
-            vs = parts[0].replace("## 第一部分", "").strip()
-            ac = parts[1].replace("：", "", 1).strip()
-            tm = re.search(r"\[文章标题\]\s*(.*)", ac)
+        import re
+        parts = re.split(r"##\s*【?第二部分[^】\n]*】?", final_content)
+        if len(parts) > 1:
+            vs = re.sub(r"##\s*【?第一部分[^】\n]*】?", "", parts[0]).strip()
+            ac = parts[1].strip()
+            # 兼容多种格式的标题行提取
+            tm = re.search(r"(?:【标题】|\[文章标题\]|标题)[：:\s]*(.*?)(?:\n|$)", ac)
             if tm:
                 nt = tm.group(1).strip()
-                ac = re.sub(r"\[文章标题\].*", "", ac, count=1).strip()
+                ac = re.sub(r"(?:【标题】|\[文章标题\]|标题)[：:\s]*.*\n", "", ac, count=1).strip()
+            
+            # 顽固标签终结者：大模型有可能会死心眼地输出这些内部结构词，直接正则洗掉
+            wash_pattern = r"(?m)^(?:【|\*\*)?(?:开篇|正文|收尾|结论|总结|引言|结语|结尾|金句|长文|短视频剧本|脚本|互动标签)(?:】|\*\*)?[：:\s\*]*"
+            ac = re.sub(wash_pattern, "", ac).strip()
+            vs = re.sub(wash_pattern, "", vs).strip()
 
         ap = os.path.join(dr_root, f"article_{ts}.md")
         with open(ap, "w", encoding='utf-8') as f:
@@ -509,17 +556,19 @@ class SelfMediaController:
         # ==========================
         import yaml
         import httpx
+        # 每种内容分类对应一套专属 AI 动态渲染主题 (wechat_themes/*.yaml)
+        # 主题由大模型根据 yaml 中的 prompt 实时生成精美 HTML，突破固定主题的局限
         theme_map = {
-            "hardcore": "cyber.yaml",
-            "insight": "ocean-calm.yaml",
-            "news": "bytedance.yaml",
-            "emotional": "autumn-warm.yaml",
-            "risk": "bold-red.yaml",
-            "tool": "apple.yaml",
-            "growth": "spring-fresh.yaml",
-            "crossover": "elegant-gold.yaml"
+            "hardcore":  "hardcore-cyber.yaml",    # 赛博硬核：暗黑科技感，荧光绿
+            "insight":   "insight-gold.yaml",      # 洞察金澜：深金奢雅，思想深度
+            "news":      "news-sharp.yaml",        # 新闻锐评：黑白高反差，红色点睛
+            "emotional": "autumn-warm.yaml",       # 秋日暖光：橙色治愈，文艺美学
+            "risk":      "risk-alert.yaml",        # 风险预警：警示红，左边框强调
+            "tool":      "tool-minimal.yaml",      # 工具极简：科技蓝，测评对比风
+            "growth":    "growth-green.yaml",      # 成长绿意：橄榄绿，积极向上
+            "crossover": "crossover-purple.yaml",  # 跨界紫境：神秘紫，思维碰撞
         }
-        theme_file = theme_map.get(cat, "default.yaml") if 'cat' in locals() else "default.yaml"
+        theme_file = theme_map.get(cat, "ocean-calm.yaml") if 'cat' in locals() else "ocean-calm.yaml"
         theme_path = os.path.join(self.workspace, "wechat_themes", theme_file)
         
         html_path = ""
@@ -562,6 +611,10 @@ class SelfMediaController:
         state['video_script'] = sp
         state['topic_context'] = selected
         if nt: state['topic_context']['title'] = nt
+        # 保存文章分类，供发布时自动选择主题
+        if 'cat' in locals():
+            state['content_category'] = cat
+            print(f"[REPURPOSE] 📂 文章分类已记录: {cat}", flush=True)
         self.save_state(state)
 
     def generate_image(self, prompt, model_type="seedream", size="1024*1024"):
@@ -578,7 +631,7 @@ class SelfMediaController:
             
             # 🚀 强制同步为用户提供的最新 API 规范 (Seedream 4.5)
             data = {
-                "model": "doubao-seedream-4-5-251128",
+                "model": "doubao-seedream-5-0-260128",
                 "prompt": prompt, # Prompt is now expected to be Chinese
                 "size": size,
                 "response_format": "url",
@@ -868,6 +921,7 @@ class SelfMediaController:
             
             if is_html:
                 if article_images:
+                    unmatched_images = []
                     for i, img_path in enumerate(article_images):
                         ph1 = f"<!-- IMG:{i} -->"
                         ph2 = f"&lt;!-- IMG:{i} --&gt;"
@@ -875,16 +929,52 @@ class SelfMediaController:
                         
                         if ph1 in content or ph2 in content:
                             content = content.replace(ph1, new_img_tag).replace(ph2, new_img_tag)
+                            print(f"[POST] 🖼️  插图 {i} 已精准插入占位符 IMG:{i}", flush=True)
                         else:
-                            # 如果没找到占位符，尝试将其追加到 </section> 或 </div> 前
-                            if "</section>" in content:
-                                content = content.rsplit("</section>", 1)[0] + f"\n{new_img_tag}\n</section>" + content.rsplit("</section>", 1)[1]
-                            elif "</div>" in content:
-                                content = content.rsplit("</div>", 1)[0] + f"\n{new_img_tag}\n</div>" + content.rsplit("</div>", 1)[1]
-                            else:
-                                content += f"\n{new_img_tag}"
+                            # 占位符不存在，留待后处理
+                            unmatched_images.append((i, img_path, new_img_tag))
+                    
+                    # 对没找到占位符的图片，均匀分布插入 </section> 断点
+                    if unmatched_images:
+                        section_positions = [m.start() for m in __import__('re').finditer(r'</section>', content)]
+                        if section_positions:
+                            # 均匀采样 section 断点
+                            step = max(1, len(section_positions) // (len(unmatched_images) + 1))
+                            chosen_positions = [section_positions[min(i * step, len(section_positions)-1)] for i, _ in enumerate(unmatched_images)]
+                            # 从后往前插（避免破坏之前的位置索引）
+                            for (i, _, tag), pos in sorted(zip(unmatched_images, chosen_positions), key=lambda x: x[1], reverse=True):
+                                content = content[:pos] + f"\n{tag}\n" + content[pos:]
+                                print(f"[POST] 🖼️  插图 {i} 均匀插入 section 断点", flush=True)
+                        elif "</div>" in content:
+                            pos = content.rfind("</div>")
+                            tags_block = "\n".join(tag for _, _, tag in unmatched_images)
+                            content = content[:pos] + f"\n{tags_block}\n" + content[pos:]
+                            print(f"[POST] 🖼️  {len(unmatched_images)} 张未匹配插图追加至 </div> 前", flush=True)
+                        else:
+                            for _, _, tag in unmatched_images:
+                                content += f"\n{tag}"
+                            print(f"[POST] 🖼️  {len(unmatched_images)} 张未匹配插图追加至末尾", flush=True)
+                    
+                    # ⚠️ 关键：清扫所有残余占位符（防止 AI 多写的占位符出现在公众号文章里）
+                    import re as _re
+                    leftover = _re.findall(r'<!--\s*IMG:\d+\s*-->', content)
+                    if leftover:
+                        print(f"[POST] 🧹 清除 {len(leftover)} 个残余图片占位符: {leftover}", flush=True)
+                    content = _re.sub(r'<!--\s*IMG:\d+\s*-->', '', content)
+                    # 同时清除 HTML 实体编码的占位符
+                    content = _re.sub(r'&lt;!--\s*IMG:\d+\s*--&gt;', '', content)
+                    
                     with open(draft_file, 'w', encoding='utf-8') as f:
                         f.write(content)
+                else:
+                    # 如果没有插图，也清扫占位符（防止 AI 提前写的占位符残留）
+                    import re as _re
+                    cleaned = _re.sub(r'<!--\s*IMG:\d+\s*-->', '', content)
+                    cleaned = _re.sub(r'&lt;!--\s*IMG:\d+\s*--&gt;', '', cleaned)
+                    if cleaned != content:
+                        print(f"[POST] 🧹 无插图模式：清除残余占位符", flush=True)
+                        with open(draft_file, 'w', encoding='utf-8') as f:
+                            f.write(cleaned)
             else:
                 # Insert images evenly among H3 headings or blank lines
                 if article_images and "![插图]" not in content:
@@ -912,6 +1002,35 @@ class SelfMediaController:
             npx_cmd = "npx.cmd" if os.name == "nt" else "npx"
             baoyu_dir = os.path.join(self.workspace, "baoyu-post-to-wechat")
             
+            # ==== 智能主题选择 ====
+            # 优先级: 1. 文章分类自动映射  2. .env WECHAT_THEME 手动指定  3. 默认 default
+            #
+            # ⚠️  注意：baoyu-post-to-wechat 只支持本地内置主题（vendor/baoyu-md/src/themes/*.css）
+            #    仅 4 个可用: default / grace / simple / modern
+            #    wechat_themes/api.yaml 里的 elegant-gold/bold-red 等属于外部 md2wechat.app API
+            #    直接传给 --theme 会报 Missing theme CSS 错误
+            CATEGORY_THEME_MAP = {
+                "hardcore":  "modern",   # 硬核干货/SOP  → 现代感强，干净有力
+                "insight":   "grace",    # 洞察认知      → 优雅精致，字体柔美
+                "news":      "default",  # 热点新闻      → 经典微信，通用易读
+                "emotional": "grace",    # 情感共鸣      → 优雅舒缓，排版流畅
+                "risk":      "modern",   # 风险揭秘/避坑  → 现代严肃，视觉聚焦
+                "tool":      "simple",   # 工具测评      → 极简直观，代码友好
+                "growth":    "simple",   # 成长/职场      → 简洁清晰，轻松易读
+                "crossover": "grace",    # 跨界思维      → 优雅精致，气质独特
+            }
+            content_category = state.get('content_category', '')
+            env_theme = os.environ.get("WECHAT_THEME", "").strip().strip('"')
+            if content_category and content_category in CATEGORY_THEME_MAP:
+                wechat_theme = CATEGORY_THEME_MAP[content_category]
+                print(f"[POST] 🎨 根据文章分类 [{content_category}] 自动选择主题: {wechat_theme}", flush=True)
+            elif env_theme:
+                wechat_theme = env_theme
+                print(f"[POST] 📋 使用 .env 手动指定主题: {wechat_theme}", flush=True)
+            else:
+                wechat_theme = "default"
+                print(f"[POST] 📋 使用默认主题: {wechat_theme}", flush=True)
+            
             script_args = [npx_cmd, "-y", "bun"]
             if method == "browser":
                 script_path = os.path.join(baoyu_dir, "scripts", "wechat-article.ts")
@@ -922,17 +1041,22 @@ class SelfMediaController:
                 
             if is_html:
                 script_args.extend(["--html", draft_file])
+                print(f"[POST] 📄 发布模式: HTML 直传 (跳过主题渲染)", flush=True)
             else:
                 if method == "browser":
-                    script_args.extend(["--markdown", draft_file, "--theme", "default"])
+                    script_args.extend(["--markdown", draft_file, "--theme", wechat_theme])
                 else:
-                    script_args.extend([draft_file, "--theme", "default"])
+                    script_args.extend([draft_file, "--theme", wechat_theme])
+                print(f"[POST] 📄 发布模式: Markdown → 主题渲染 ({wechat_theme})", flush=True)
                 
             if cover_path and os.path.exists(cover_path):
                 script_args.extend(["--cover", os.path.abspath(cover_path)])
+                print(f"[POST] 🖼️  封面图: {os.path.basename(cover_path)}", flush=True)
             if title:
                 script_args.extend(["--title", title])
-                
+                print(f"[POST] 📌 文章标题: {title}", flush=True)
+            
+            print(f"[POST] 🚀 执行命令: {' '.join(script_args[:5])} ...", flush=True)
             proc = subprocess.Popen(script_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
             for line in proc.stdout:
                 print(line, end='', flush=True)
@@ -957,16 +1081,21 @@ class SelfMediaController:
 
 def main():
     parser = argparse.ArgumentParser(description="自媒体工作流调度器")
-    parser.add_argument('action', choices=['setup', 'discovery', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="动作")
+    parser.add_argument('action', choices=['setup', 'discovery', 'next', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="动作")
     parser.add_argument('--keyword', type=str); parser.add_argument('--url', type=str); parser.add_argument('--id', type=str)
     parser.add_argument('--model', default='seedream'); parser.add_argument('--method', default='api')
     parser.add_argument('--script', type=str); parser.add_argument('--article', type=str)
+    parser.add_argument('--refresh', action='store_true', help="强制刷新")
+    parser.add_argument('--last_id', type=str, help="游标分页用的 last_id")
+    parser.add_argument('--script-only', action='store_true', help="仅重写短视频脚本")
+    parser.add_argument('--article-only', action='store_true', help="仅重写深度长文")
     
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
     controller = SelfMediaController()
     
     if args.action == 'setup': controller.run_setup()
-    elif args.action == 'discovery': controller.run_discovery(args.keyword)
+    elif args.action == 'discovery': controller.run_discovery(keyword=args.keyword, refresh=args.refresh, last_id=args.last_id)
+    elif args.action == 'next': controller.run_next_discovery()
     elif args.action == 'from-article': controller.run_from_article(args.url)
     elif args.action == 'from-video': controller.run_from_video(args.url)
     elif args.action == 'repurpose': controller.run_repurpose(args.id)
