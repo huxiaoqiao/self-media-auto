@@ -11,6 +11,7 @@ import re
 import time
 import threading
 import socket
+import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import uuid
 
@@ -446,9 +447,14 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 pass
 
             if use_refresh:
-                cmd = ['python', 'workflow_controller.py', 'discovery', '--refresh']
+                cmd = ['python', '-u', 'workflow_controller.py', 'discovery', '--refresh']
+            else:
+                cmd = ['python', '-u', 'workflow_controller.py', 'next']
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=90, encoding='utf-8', errors='replace', env=env)
             output = result.stdout
             print(f"[DEBUG] command output length: {len(output)}", flush=True)
 
@@ -487,7 +493,12 @@ class FeishuHandler(BaseHTTPRequestHandler):
         Returns list of dicts with keys: id (URL), title, source, author, score, data (display string), analysis.
         """
         topics = []
-        lines = output.split('\n')
+        # Strip ANSI color codes from entire output first
+        import re as _re
+        ansi_escape = _re.compile(r'\x1b\[[0-9;]*m')
+        clean_output = ansi_escape.sub('', output)
+        
+        lines = clean_output.split('\n')
         current_topic = None
 
         for line in lines:
@@ -640,20 +651,20 @@ class FeishuHandler(BaseHTTPRequestHandler):
             author = topic_ctx.get('author', '')
             score = topic_ctx.get('score', '')
 
-            # Fetch article content
+            # Fetch article content using Controller's browser engine
             raw_content = ""
             if url:
                 try:
-                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        html = resp.read().decode('utf-8', errors='replace')
-                        match = re.search(r'id="js_content"[^>]*>(.*?)</div>', html, re.DOTALL)
-                        if match:
-                            raw_content = re.sub(r'<[^>]+>', '', match.group(1))
-                        else:
-                            raw_content = re.sub(r'<[^>]+>', '', html)[:2000]
+                    # Import Controller dynamicially to access its powerful extraction
+                    sys.path.insert(0, WORKDIR)
+                    from workflow_controller import SelfMediaController
+                    controller = SelfMediaController()
+                    print(f"[DEBUG] Fetching content using Controller's engine: {url}", flush=True)
+                    raw_content = controller._extract_article_content(url)
+                    if not raw_content:
+                        print(f"[WARN] Controller extraction returned empty, fallback to basic titles", flush=True)
                 except Exception as e:
-                    print(f"[WARN] Failed to fetch article: {e}", flush=True)
+                    print(f"[WARN] Failed to fetch article using controller: {e}", flush=True)
 
             # Call LLM for insight
             insight_text = ""
@@ -763,7 +774,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
             # 3. 执行子进程，延长超时时间至 300 秒以防 LLM 响应慢
             process_start = time.time()
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, encoding='utf-8', errors='replace')
             process_duration = time.time() - process_start
             
             # 记录详细调试日志
@@ -936,7 +947,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
         os.chdir(WORKDIR)
 
         cmd = ['python', 'workflow_controller.py', 'repurpose', '--script-only']
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, encoding='utf-8', errors='replace')
 
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
             state = json.load(f)
@@ -986,7 +997,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
         os.chdir(WORKDIR)
 
         cmd = ['python', 'workflow_controller.py', 'repurpose', '--article-only']
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, encoding='utf-8', errors='replace')
 
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
             state = json.load(f)
@@ -1244,7 +1255,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             os.chdir(WORKDIR)
             result = subprocess.run(
                 ['python', 'workflow_controller.py', 'post', '--method', 'browser'],
-                capture_output=True, text=True, timeout=90
+                capture_output=True, text=True, timeout=90, encoding='utf-8', errors='replace'
             )
             if 'QR' in result.stdout or 'qr' in result.stdout.lower() or '二维码' in result.stdout:
                 self.send_text(token, "📱 请扫描二维码并扫码登录公众号后台")

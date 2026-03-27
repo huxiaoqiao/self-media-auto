@@ -1543,11 +1543,29 @@ class SelfMediaController:
                  # (由于篇幅原因，我在这里保持原本逻辑的调用)
                  pass
 
-        # === 核心改写部分 ===
+        # === 2. 搜索增强 (RAG) ===
+        search_context = ""
+        try:
+            # 动态导入，避免循环引用
+            search_engine_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'search_engine.py')
+            if os.path.exists(search_engine_file):
+                from search_engine import get_latest_context
+                print(f"🔍 正在检索「{title_val}」的实时背景信息 (通过 DuckDuckGo)...")
+                search_context = get_latest_context(title_val, raw_content)
+                if search_context:
+                    print(f"✅ 已成功获取最新背景 context ({len(search_context)} 字)")
+                else:
+                    print("⚠️ 未发现需要检索的新名词，跳过搜索增强。")
+        except Exception as e:
+            print(f"⚠️ 搜索增强模块加载失败: {e}")
+
+        # === 3. 核心改写逻辑 ===
         author_ip_name = os.getenv("AUTHOR_IP_NAME", "大胡子")
         repurpose_prompt = f"""
 你现在的身份是自媒体领域的顶级极客大 IP：【{author_ip_name}】。
 任务：对提供的素材进行极具个人锋芒的洗稿与升维。
+
+{"### 最新背景参考信息 (实时检索自全网)：" + search_context if search_context else ""}
 
 ### 强制输出格式规范：
 1. **文章标题**：必须放在第一行，格式为：【标题：xxxxxxx】

@@ -23,16 +23,14 @@ def get_latest_context(topic_title, raw_content):
         print("⚠️ 缺少 OPENAI_API_KEY，跳过搜索增强。")
         return ""
 
-    prompt = f"""
-    请从以下文章内容中，提取出可能是最新发布的 AI 工具、新技术名词、专有名词（例如：OpenClaude，DeepSeek-V3 等）。
-    你的任务仅仅是发现“可能会被大模型旧知识库搞错的新名词”。
-    如果没有这类新名词，请直接回复 "NONE"。
-    如果发现有，请以逗号分隔的形式仅仅返回这些名词（最多返回2个最重要的核心词）。
-    不要输出任何其他内容。
-    
-    标题：{topic_title}
-    内容前1000字：{raw_content[:1000]}
-    """
+    prompt = f"""请从以下文章内容中，提取出可能是最新发布的 AI 工具、新技术名词、专有名词（例如：OpenClaude，DeepSeek-V3 等）。
+你的任务仅仅 is 发现“可能会被大模型旧知识库搞错的新名词”。
+如果没有这类新名词，请直接回复 "NONE"。
+如果发现有，请以逗号分隔的形式仅仅返回这些名词（最多返回2个最重要的核心词）。
+不要输出任何其他内容。
+
+标题：{topic_title}
+内容前1000字：{raw_content[:1000]}"""
     try:
         resp = client.chat.completions.create(
              model=os.getenv("LLM_MODEL_ID", "deepseek-chat"),
@@ -55,15 +53,18 @@ def get_latest_context(topic_title, raw_content):
     context_results = []
     print(f"🔍 识别到可能的新术语: {keywords}，正在执行全网搜索 (DuckDuckGo RAG)...")
     
-    with DDGS() as ddgs:
-        for kw in keywords[:2]: 
-            try:
-                results = list(ddgs.text(kw + " 介绍 最新", max_results=3))
-                if results:
-                    snippets = [r.get('body', '') for r in results]
-                    context_results.append(f"有关【{kw}】的最新网络检索信息：\n" + "\n".join(snippets))
-            except Exception as e:
-                print(f"⚠️ 搜索【{kw}】时出错: {e}")
+    try:
+        with DDGS() as ddgs:
+            for kw in keywords[:2]: 
+                try:
+                    results = list(ddgs.text(kw + " 最新进展", max_results=3))
+                    if results:
+                        snippets = [r.get('body', '') for r in results]
+                        context_results.append(f"有关【{kw}】的最新网络检索信息：\n" + "\n".join(snippets))
+                except Exception as e:
+                    print(f"⚠️ 搜索【{kw}】时出错: {e}")
+    except Exception as e:
+        print(f"⚠️ DuckDuckGo 搜索组件启动失败: {e}")
                 
     if context_results:
          return "\n\n".join(context_results)
