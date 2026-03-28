@@ -607,7 +607,9 @@ class SelfMediaController:
             print(f"   html_path={html_path}")
         
         state['current_step'] = "waiting_for_content_review"
-        state['draft_file'] = html_path if html_path else ap
+        state['draft_file'] = ap
+        if html_path:
+            state['html_file'] = html_path
         state['video_script'] = sp
         state['topic_context'] = selected
         if nt: state['topic_context']['title'] = nt
@@ -1068,7 +1070,7 @@ class SelfMediaController:
 
     def run_post(self, method="api"):
         state = self.load_state()
-        draft_file = state.get('draft_file')
+        draft_file = state.get('html_file') or state.get('draft_file')
         if not draft_file or not os.path.exists(draft_file): return False
         success = self.post_to_wechat(draft_file, method=method, cover_path=state.get('cover_image'), title=state.get('topic_context', {}).get('title'))
         if success: state['current_step'] = "done"; self.save_state(state)

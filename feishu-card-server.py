@@ -168,7 +168,38 @@ class FeishuHandler(BaseHTTPRequestHandler):
             threading.Thread(target=self.handle_card_action, args=(action_value,)).start()
             return
 
-        # 如果不是按钮点击，返回通用成功
+        # 检查是否是文本消息并包含 URL
+        if event_type == 'im.message.receive_v1':
+            message = data.get('event', {}).get('message', {})
+            msg_type = message.get('message_type')
+            if msg_type == 'text':
+                try:
+                    content_json = json.loads(message.get('content', '{}'))
+                    text = content_json.get('text', '')
+                    urls = re.findall(r'(https?://[^\s]+)', text)
+                    if urls:
+                        url = urls[0]
+                        # 立即回复接收确认
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"code": 0, "msg": "success"}).encode('utf-8'))
+                        
+                        def process_url(u):
+                            time.sleep(0.5)  # 稍微延迟，确保前端响应完成
+                            token = self.get_token()
+                            self.send_text(token, "收到链接，正在解析，请稍后（预计1-2分钟）...")
+                            self.update_topic_context_by_id(token, u)
+                            # 后台长耗时任务，直接对接 insight 流程
+                            self.run_insight_and_send_card(token, f"insight_{u}")
+                            
+                        # start thread
+                        threading.Thread(target=process_url, args=(url,)).start()
+                        return
+                except Exception as e:
+                    print(f"[WARN] Failed to parse im.message.receive_v1 text: {e}", flush=True)
+
+        # 如果不是按钮点击或没匹配上，返回通用成功
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
