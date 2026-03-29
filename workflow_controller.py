@@ -16,10 +16,29 @@ import subprocess
 import os
 import json
 import io
+import logging
 from datetime import datetime
 from dotenv import load_dotenv
 import requests
 import re
+
+# ==================== 日志配置 ====================
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, f'workflow_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+LOG_FORMAT = '%(asctime)s | %(levelname)-8s | %(name)s | %(funcName)s:%(lineno)d | %(message)s'
+DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+logger = logging.getLogger('WorkflowController')
+logger.setLevel(logging.DEBUG)
+file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
+logger.addHandler(file_handler)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
+logger.addHandler(console_handler)
+print(f"[LOG] 日志文件路径：{LOG_FILE}")
 
 # 针对 Windows 环境下输出 Emoji 可能导致的 GBK 编码报错进行补丁
 if sys.stdout.encoding != 'utf-8':
@@ -36,22 +55,38 @@ class SelfMediaController:
     def __init__(self):
         self.workspace = os.getcwd()
         self.session_file = os.path.join(self.workspace, '.workflow_state.json')
+        logger.info('控制器初始化完成 | workspace=%s', self.workspace)
 
     def load_state(self):
+        logger.debug('加载状态 | session_file=%s', self.session_file)
         if os.path.exists(self.session_file):
-            with open(self.session_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            try:
+                with open(self.session_file, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+                logger.info('从文件加载成功 | step=%s', state.get('current_step'))
+                return state
+            except Exception as e:
+                logger.error('加载状态失败 | %s', e)
+                return {"current_step": "idle", "selected_topic": None, "draft_file": None}
+        logger.debug('状态文件不存在')
         return {"current_step": "idle", "selected_topic": None, "draft_file": None}
 
     def save_state(self, state):
-        with open(self.session_file, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        logger.debug('保存状态 | step=%s', state.get('current_step'))
+        try:
+            with open(self.session_file, 'w', encoding='utf-8') as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            logger.info('状态保存成功')
+        except Exception as e:
+            logger.error('保存状态失败 | %s', e)
+            raise
 
     def run_setup(self):
         """
         [v1.1] 首次使用引导：环境检测与配置
         """
         import shutil
+        logger.info("启动 setup 配置向导")
         print("\n" + "="*50)
         print("🚀 欢迎使用自媒体系统引导配置 (Setup Wizard)")
         print("="*50 + "\n")
@@ -141,6 +176,7 @@ class SelfMediaController:
         [v1.1] 快捷入口：从指定文章链接开始创作
         """
         import re
+        logger.info("启动 from-article | url=%s", str(url_or_text)[:60])
         match = re.search(r'https?://[^\s]+', url_or_text)
         url = match.group(0) if match else url_or_text
         
@@ -162,6 +198,7 @@ class SelfMediaController:
         [v1.1] 快捷入口：从指定视频链接开始创作
         """
         import re
+        logger.info("启动 from-video | url=%s", str(url_or_text)[:60])
         match = re.search(r'https?://[^\s]+', url_or_text)
         url = match.group(0) if match else url_or_text
         
@@ -184,7 +221,7 @@ class SelfMediaController:
         """
         import subprocess
         import json
-        
+        logger.info("启动 sync_to_feishu | script=%s | article=%s", script_path, article_path)
         date_folder = datetime.now().strftime('%Y-%m-%d')
         
         print("🚀 启动 [飞书文档同步]...")
@@ -217,7 +254,7 @@ class SelfMediaController:
         抓取微信爆款文章的热点。
         """
         import requests
-        
+        logger.info("启动 run_discovery | keyword=%s", keyword)
         state = self.load_state()
         saved_industry = state.get('industry')
 
@@ -335,6 +372,7 @@ class SelfMediaController:
         self.save_state(state)
 
     def run_next_discovery(self):
+        logger.info("启动 run_next_discovery 分页浏览")
         state = self.load_state()
         candidates = state.get('last_candidates', [])
         page_index = state.get('candidates_page_index', 1)
@@ -358,6 +396,7 @@ class SelfMediaController:
 
     def _extract_article_content(self, article_url, selected=None):
         """通用素材提取服务：支持网页解析、次幂 API 保底、抖音文案提取。"""
+        logger.info("启动内容提取 | url=%s", str(article_url)[:60])
         import subprocess, sys, os, re, json, requests
         raw_content = ""
         source = (selected or {}).get("source", "微信")
@@ -405,6 +444,7 @@ class SelfMediaController:
         """
         [IP 改写引擎 V2] 支持智能场景匹配、多源抓取保底、联网补全实时背景。
         """
+        logger.info("启动 run_repurpose | topic=%s", str(topic_id_or_cmd)[:60])
         import subprocess, sys, os, re, json, requests
         from datetime import datetime
         state = self.load_state()
@@ -623,6 +663,7 @@ class SelfMediaController:
         """
         集成多生图引擎支持
         """
+        logger.info("启动 generate_image | model=%s", model_type)
         import requests
         import time
         if model_type == "seedream":
@@ -665,6 +706,7 @@ class SelfMediaController:
             except Exception: return None
 
     def download_image_file(self, url, folder=None):
+        logger.debug("下载图片 | url=%s", url[:60] if url else "")
         if not folder:
             folder = os.path.join(self.workspace, 'assets', datetime.now().strftime('%Y-%m-%d'))
         os.makedirs(folder, exist_ok=True)
@@ -688,6 +730,7 @@ class SelfMediaController:
         return {}
 
     def analyze_visuals(self, article_content, category="insight"):
+        logger.info("启动 analyze_visuals | category=%s", category)
         import httpx
         api_key = os.getenv("OPENAI_API_KEY")
         api_base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -740,6 +783,7 @@ class SelfMediaController:
             return None
 
     def download_image_file(self, url, folder=None):
+        logger.debug("下载图片 | url=%s", url[:60] if url else "")
         if not folder:
             folder = os.path.join(self.workspace, 'assets', datetime.now().strftime('%Y-%m-%d'))
         os.makedirs(folder, exist_ok=True)
@@ -763,6 +807,7 @@ class SelfMediaController:
         return {}
 
     def analyze_visuals(self, article_content, category="insight"):
+        logger.info("启动 analyze_visuals | category=%s", category)
         import httpx
         api_key = os.getenv("OPENAI_API_KEY")
         api_base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -830,6 +875,7 @@ class SelfMediaController:
 
     def run_visuals(self, model_type="seedream"):
         """钢铁意志视觉引擎：绝对不中断，成一张推一张"""
+        logger.info("启动 run_visuals | model=%s", model_type)
         state = self.load_state()
         # 强制初始化并清空之前的图片记录（防止重试时图片不断追加）
         state['article_images'] = []
@@ -1069,6 +1115,7 @@ class SelfMediaController:
             return False
 
     def run_post(self, method="api"):
+        logger.info("启动 run_post | method=%s", method)
         state = self.load_state()
         draft_file = state.get('html_file') or state.get('draft_file')
         if not draft_file or not os.path.exists(draft_file): return False
@@ -1077,11 +1124,13 @@ class SelfMediaController:
         return success
 
     def run_publish(self, model_type="seedream", method="api"):
+        logger.info("启动 run_publish | model=%s | method=%s", model_type, method)
         if self.run_visuals(model_type=model_type):
             return self.run_post(method=method)
         return False
 
 def main():
+    logger.info("启动 workflow_controller")
     parser = argparse.ArgumentParser(description="自媒体工作流调度器")
     parser.add_argument('action', choices=['setup', 'discovery', 'next', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="动作")
     parser.add_argument('--keyword', type=str); parser.add_argument('--url', type=str); parser.add_argument('--id', type=str)
