@@ -18,10 +18,20 @@ import shutil
 import sys
 import uuid
 import webbrowser
+import socket
+import threading
+import http.server
+import socketserver
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import markdown
+
+def get_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
 
 # ── 脚注占位符（UUID 防冲突）──────────────────────────────────────────
 _FN_PREFIX = f"__FN_{uuid.uuid4().hex[:8]}_"
@@ -1475,7 +1485,7 @@ def _render_single_theme(tid, theme_data, gallery_html, gallery_footnote):
 
 def generate_gallery(rendered_map: dict, theme_map: dict,
                      theme_ids: list, title: str, word_count: int,
-                     output_dir: Path, recommended: list = None):
+                     output_dir: Path, recommended: list = None, callback_port: int = None):
     """生成主题画廊页面（单预览区 + 切换按钮模式）"""
     if recommended is None:
         recommended = []
@@ -1531,6 +1541,7 @@ def generate_gallery(rendered_map: dict, theme_map: dict,
         .replace("{{THEME_BUTTONS}}", buttons_html)
         .replace("{{THEME_PREVIEWS}}", previews_html)
         .replace("{{DEFAULT_THEME}}", default_theme)
+        .replace("{{CALLBACK_PORT}}", str(callback_port) if callback_port else "")
     )
 
     # 写入选中主题到临时文件（默认第一个）
@@ -1631,9 +1642,14 @@ def main():
     output_base = Path(args.output)
     theme_name = args.theme
 
-    # 每篇文章一个子目录: 公众号排版/2026-02-26-文章名/
-    file_stem = re.sub(r"-(公众号|小红书|微博)$", "", input_path.stem)
-    output_dir = output_base / file_stem
+    if output_base.suffix.lower() == '.html':
+        output_dir = output_base.parent
+        target_article_path = output_base
+    else:
+        # 每篇文章一个子目录: 公众号排版/2026-02-26-文章名/
+        file_stem = re.sub(r"-(公众号|小红书|微博)$", "", input_path.stem)
+        output_dir = output_base / file_stem
+        target_article_path = output_dir / "article.html"
 
     # 验证输入文件
     if not input_path.exists():
@@ -1656,13 +1672,12 @@ def main():
     # 非微信格式：简单输出
     if args.format != "wechat":
         result = format_for_output(content, input_path, theme, output_dir, vault_root, args.format)
-        out_path = output_dir / f"article.{args.format}.html"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        target_article_path.parent.mkdir(parents=True, exist_ok=True)
         out_html = result["html"]
         if result["footnote_html"]:
             out_html += "\n" + result["footnote_html"]
-        out_path.write_text(out_html, encoding="utf-8")
-        print(f"\n输出: {out_path}")
+        target_article_path.write_text(out_html, encoding="utf-8")
+        print(f"\n输出: {target_article_path}")
         return
 
     # 处理流程
@@ -1712,12 +1727,14 @@ def main():
             for future in as_completed(futures):
                 tid, rendered = future.result()
                 rendered_map[tid] = rendered
-                print(f"  ✓ {theme_map[tid].get('name', tid)} ({tid})")
+                print(f"  * {theme_map[tid].get('name', tid)} ({tid})")
 
+        callback_port = get_free_port()
         gallery_path = generate_gallery(
             rendered_map, theme_map, gallery_theme_ids,
             title, word_count, output_dir,
-            recommended=args.recommend
+            recommended=args.recommend,
+            callback_port=callback_port
         )
         print(f"\n画廊页面: {gallery_path}")
 
@@ -1725,9 +1742,44 @@ def main():
             webbrowser.open(f"file://{gallery_path}")
             print("已在浏览器中打开画廊")
 
-        print(f"\n完成! 选中主题后点「用这个风格排版」即可复制到剪贴板。")
-        print(f"选中的主题 ID 会写入 /tmp/wechat-format/selected-theme.txt")
-        return
+        print(f"\n等待浏览器的排版确认 (Port: {callback_port})...")
+        selected_theme = args.theme
+
+        class ThemeCallbackHandler(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+            def do_OPTIONS(self):
+                self.send_response(200, "ok")
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+                self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+                self.end_headers()
+            def do_POST(self):
+                nonlocal selected_theme
+                if self.path == '/submit_theme':
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    post_data = self.rfile.read(content_length).decode('utf-8')
+                    try:
+                        data = json.loads(post_data)
+                        selected_theme = data.get('theme', selected_theme)
+                    except Exception:
+                        selected_theme = post_data.strip()
+                    self.send_response(200)
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"status": "success"}).encode('utf-8'))
+                    
+                    def shutdown_server():
+                        self.server.shutdown()
+                    threading.Thread(target=shutdown_server).start()
+
+        with socketserver.TCPServer(("127.0.0.1", callback_port), ThemeCallbackHandler) as httpd:
+            httpd.serve_forever()
+
+        print(f"\n收到确认：开始使用主题 '{selected_theme}' 生成最终 HTML。")
+        theme = load_theme(selected_theme)
+        # 不 return，让代码继续向下执行单主题模式，覆盖输出真正的排版 html！
 
     # ── 单主题模式 ──
     html = inject_inline_styles(html, theme)
@@ -1742,8 +1794,8 @@ def main():
     full_article = html
     if footnote_html:
         full_article += "\n" + footnote_html
-    article_path = output_dir / "article.html"
-    article_path.write_text(full_article, encoding="utf-8")
+    target_article_path.parent.mkdir(parents=True, exist_ok=True)
+    target_article_path.write_text(full_article, encoding="utf-8")
 
     # 保存预览 HTML
     preview_path = output_dir / "preview.html"

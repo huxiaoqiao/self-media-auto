@@ -282,12 +282,13 @@ body {
     </div>
 
     <!-- Action Buttons -->
-    <button class="action-btn" id="confirmBtn" onclick="confirmAndCopy()">✓ 确认 — 回到 Claude 回复主题名 推送到公众号</button>
-    <button class="action-btn" id="copyBtn" onclick="applyTheme()" style="background:#86868b;margin-top:8px;">复制内容到剪贴板 去公众号粘贴</button>
+    <button class="action-btn" id="confirmBtn" onclick="confirmAndCopy()">✓ 根据此风格排版并发布公众号</button>
+    <button class="action-btn" id="copyBtn" onclick="applyTheme()" style="background:#86868b;margin-top:8px;">不发布，仅复制到剪贴板</button>
 
 </div>
 
 <script>
+var CALLBACK_PORT = '{{CALLBACK_PORT}}';
 var selectedTheme = '{{DEFAULT_THEME}}';
 
 function switchTheme(themeId) {
@@ -319,7 +320,7 @@ function switchTheme(themeId) {
     // Reset confirm button
     var confirmBtn = document.getElementById('confirmBtn');
     if (confirmBtn) {
-        confirmBtn.textContent = '✓ 确认 — 回到 Claude 回复主题名 推送到公众号';
+        confirmBtn.textContent = '✓ 根据此风格排版并发布公众号';
         confirmBtn.classList.remove('copied');
     }
     // Scroll preview to top
@@ -367,8 +368,27 @@ function confirmAndCopy() {
         themeName = activeBtn.textContent.replace('推荐', '').trim();
     }
     var btn = document.getElementById('confirmBtn');
-    btn.textContent = '✓ 已确认「' + themeName + '」— 回到 Claude 回复「' + themeName + '」推送到公众号';
+    btn.textContent = '执行排版中，马上自动关闭并进入发布程序...';
     btn.classList.add('copied');
+
+    // Notify the backend Python server
+    if (CALLBACK_PORT) {
+        fetch('http://localhost:' + CALLBACK_PORT + '/submit_theme', {
+            method: 'POST',
+            body: JSON.stringify({theme: selectedTheme}),
+            headers: {'Content-Type': 'application/json'}
+        }).then(function(res) {
+            setTimeout(function() {
+                window.open('', '_self', '');
+                window.close();
+            }, 500);
+        }).catch(function(err) {
+            btn.textContent = '通讯失败，找不到后台服务';
+            btn.style.background = '#ef4444';
+        });
+    } else {
+        btn.textContent = '✓ 已排版，无需发布';
+    }
 }
 
 function applyTheme() {

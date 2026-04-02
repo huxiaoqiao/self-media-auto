@@ -1897,7 +1897,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             if 'QR' in result.stdout or 'qr' in result.stdout.lower() or '二维码' in result.stdout:
                 self.send_text(token, "📱 请扫描二维码并扫码登录公众号后台")
             elif result.returncode != 0 or 'error' in result.stdout.lower():
-                self.send_text(token, f"⚠️ 发布失败，请检查公众号后台\n错误信息: {result.stderr[:100] if result.stderr else result.stdout[:100]}")
+                self.send_text(token, f"⚠️ 发布失败，请检查公众号后台\n错误信息: {result.stderr[-500:] if result.stderr else result.stdout[-500:]}")
             else:
                 self.send_text(token, "🚀 发布流程已启动，请检查公众号后台")
         except Exception as e:

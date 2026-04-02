@@ -46,7 +46,7 @@ class XiaohuFormatter:
         if not self.format_script.exists():
             logger.warning(f"Xiaohu format 脚本不存在：{self.format_script}")
 
-    def format_with_gallery(self, content: str, output_path: str) -> str:
+    def format_with_gallery(self, content: str, output_path: str, recommend: list = None) -> str:
         """
         启动浏览器主题选择器，用户选择后生成 HTML
 
@@ -73,7 +73,6 @@ class XiaohuFormatter:
             self._ensure_config_exists(output_dir)
 
             # 3. 启动 gallery 模式
-            # xiaohu 的 gallery 模式会启动一个本地 Web 服务器并打开浏览器
             cmd = [
                 sys.executable,
                 str(self.format_script),
@@ -81,6 +80,10 @@ class XiaohuFormatter:
                 '--gallery',
                 '--output', output_path
             ]
+            
+            if recommend:
+                cmd.extend(['--recommend'])
+                cmd.extend(recommend)
 
             # 4. 启动进程
             self.logger.info(f"执行命令：{' '.join(cmd)}")

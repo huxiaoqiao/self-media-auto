@@ -465,7 +465,6 @@ class SelfMediaController:
         logger.info("[DISCOVERY] Displaying %d recommendations", len(candidates))
         for idx, c in enumerate(candidates, 1):
             print(f"{idx}. [{c['source']}] [{c['title']}]({c['id']})")
-            logger.info("[DISCOVERY] Displaying candidate: %s", c["title"][:30])
             print(f"👤 {c['author']} | 👁️ 阅读: {c.get('comments', 0)} | 👍 赞: {c.get('likes', 0)} | 🔥 热度：{c.get('score', 0)}")
             logger.info("[DISCOVERY] Displaying candidate: %s", c["title"][:30])
         print("===================================")
@@ -1206,6 +1205,37 @@ class SelfMediaController:
             print(f"[ERROR] post_to_wechat 失败: {e}", flush=True)
             return False
 
+    def _recommend_themes(self, content: str, available_themes: list) -> list:
+        try:
+            api_key = os.environ.get("OPENAI_API_KEY")
+            api_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            mid = os.environ.get("LLM_MODEL_ID", "deepseek-chat")
+            if not api_key or "your_api_key" in api_key:
+                return []
+            
+            import httpx
+            import json
+            
+            prompt = f"分析以下文章内容的风格（如科技、深度、故事、教程等），从提供的主题列表中，选出最适合的 1 到 2 个主题ID。\n只返回一个JSON数组，例如：[\"github\", \"newspaper\"]，不要返回任何其他说明文字。\n\n可用主题列表：{', '.join(available_themes)}\n\n文章预览：\n{content[:1500]}"
+            
+            with httpx.Client(timeout=30) as cl:
+                resp = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
+                               json={"model": mid, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1})
+                if resp.status_code == 200:
+                    answer = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                    if answer.startswith("```json"): answer = answer[7:]
+                    if answer.startswith("```"): answer = answer[3:]
+                    if answer.endswith("```"): answer = answer[:-3]
+                    choice = json.loads(answer.strip())
+                    if isinstance(choice, list):
+                        valid_themes = [str(t).strip() for t in choice if str(t).strip() in available_themes]
+                        if valid_themes:
+                            print(f"🤖 AI 主题推荐成功: {valid_themes}")
+                            return valid_themes
+        except Exception as e:
+            print(f"⚠️ AI 推荐主题失败，使用默认主题: {e}")
+        return []
+
     def run_post(self, method="api"):
         logger.info("启动 run_post | method=%s", method)
         state = self.load_state()
@@ -1228,11 +1258,15 @@ class SelfMediaController:
                 logger.info("启动 Xiaohu Gallery 模式")
                 with open(draft_file, 'r', encoding='utf-8') as f:
                     final_content = f.read()
+
+                print(f"✨ 正在分析文章内容并推荐主题...")
+                available_themes = xiaohu_formatter.list_themes()
+                recommended_themes = self._recommend_themes(final_content, available_themes)
                 
                 ts = datetime.now().strftime('%Y%m%d%H%M')
                 dr_root = os.path.dirname(draft_file)
                 hp = os.path.join(dr_root, f"article_{ts}.html")
-                html_path = xiaohu_formatter.format_with_gallery(final_content, hp)
+                html_path = xiaohu_formatter.format_with_gallery(final_content, hp, recommend=recommended_themes)
                 print(f"✅ Xiaohu 排版完成：{html_path}")
             except Exception as e:
                 print(f"⚠️ Xiaohu 异常，跳过排版: {e}")
