@@ -41,6 +41,8 @@ def load_persistent_map():
             if persisted:
                 TOPIC_MAP.update(persisted)
                 print(f"[INIT] Loaded {len(TOPIC_MAP)} persistent topic mappings from state file.")
+                # 启动时自动清理过期数据
+                cleanup_expired_map(max_age_days=3)
     except Exception as e:
         print(f"[WARN] Failed to load persistent topic map: {e}")
 
@@ -53,14 +55,29 @@ def save_persistent_map():
         # Read current state first to avoid overwriting other keys
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
             state = json.load(f)
-        
+
         state['topic_map'] = TOPIC_MAP
-        
+
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
         # print(f"[DEBUG] TOPIC_MAP persisted to {STATE_FILE}")
     except Exception as e:
         print(f"[WARN] Failed to persist topic map: {e}")
+
+
+def cleanup_expired_map(max_age_days=3):
+    """清理超过指定天数（默认 3 天）的 topic 映射"""
+    global TOPIC_MAP
+    cutoff = time.time() - (max_age_days * 24 * 60 * 60)
+    expired_keys = [k for k, v in TOPIC_MAP.items()
+               if v.get('created_at', 0) < cutoff]
+    for k in expired_keys:
+        TOPIC_MAP.pop(k, None)
+    if expired_keys:
+        print(f"[CLEANUP] Removed {len(expired_keys)} expired topics (older than {max_age_days} days)")
+        save_persistent_map()
+    else:
+        print(f"[CLEANUP] No expired topics to remove (retaining {len(TOPIC_MAP)} items)")
 
 
 # Initialize on import/startup
@@ -784,12 +801,13 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 if data_parts:
                     current_topic['data'] = ' | '.join(data_parts)
                     current_topic['score'] = str(score_val)
-                    
+
                     # 关键革新：生成全局唯一 ID 并加入映射
                     guid = str(uuid.uuid4())[:8] # 取 8 位 UUID
                     current_topic['guid'] = guid
+                    current_topic['created_at'] = time.time()  # 添加时间戳用于过期清理
                     TOPIC_MAP[guid] = current_topic
-                    
+
                     topics.append(current_topic)
                     current_topic = None
 
