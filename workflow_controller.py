@@ -591,6 +591,44 @@ class SelfMediaController:
             return match.group(1).strip()
         return None
 
+    def _extract_video_content(self, url):
+        """提取视频文案（ASR）"""
+        import os
+        import subprocess
+        import re
+
+        if "douyin.com" in url:
+            logger.info(f"[视频提取] 正在从抖音提取文案：{url}")
+            douyin_js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "douyin-download-1.2.0", "douyin.js")
+            output_dir = os.path.join(os.getcwd(), 'cache', 'douyin_extract')
+            os.makedirs(output_dir, exist_ok=True)
+
+            if not os.getenv("SILI_FLOW_API_KEY"):
+                logger.warning("[视频提取] 未设置 SILI_FLOW_API_KEY，无法提取语音")
+                return None
+
+            cmd = ["node", douyin_js_path, "extract", url, "-o", output_dir, "--no-segment"]
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=os.environ)
+                if res.returncode == 0:
+                    # 使用任意字符匹配冒号（避免字符类编码问题）
+                    match = re.search(r"保存位置.\s*(.+?\.md)", res.stdout)
+                    if match:
+                        md_path = match.group(1).strip()
+                        if os.path.exists(md_path):
+                            with open(md_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            parts = content.split("## 文案内容")
+                            if len(parts) > 1:
+                                logger.info(f"[视频提取] 提取成功：{len(parts[-1].strip())} 字")
+                                return parts[-1].strip()
+                logger.warning(f"[视频提取] douyin.js 返回非零状态码：{res.returncode}")
+            except Exception as e:
+                logger.error(f"[视频提取] douyin.js 解析失败：{e}")
+        else:
+            logger.debug(f"[视频提取] 非抖音 URL，跳过：{url}")
+        return None
+
     def run_repurpose(self, topic_id_or_cmd):
         """
         [IP 改写引擎 V2] 支持智能场景匹配、多源抓取保底、联网补全实时背景。

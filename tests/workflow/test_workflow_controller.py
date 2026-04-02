@@ -215,3 +215,57 @@ class TestExtractAuthor:
         result = controller._extract_author(content)
 
         assert result is None
+
+
+class TestExtractVideoContent:
+    """视频内容提取方法测试"""
+
+    @patch('workflow_controller.subprocess.run')
+    @patch('workflow_controller.os.path.exists')
+    @patch('workflow_controller.os.makedirs')
+    @patch('workflow_controller.os.getenv')
+    def test_extract_video_content_from_douyin(self, mock_getenv, mock_makedirs, mock_exists, mock_run):
+        """从抖音视频提取文案"""
+        from workflow_controller import SelfMediaController
+
+        # 配置 mock - 注意使用中文冒号"保存位置："匹配代码中的正则
+        mock_getenv.return_value = 'test_api_key'
+        mock_exists.return_value = True
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='保存位置：/tmp/douyin.md',
+            stderr=''
+        )
+
+        # 配置 open mock，正确设置上下文管理器
+        mock_file = MagicMock()
+        mock_file.read.return_value = '## 文案内容\n\n这是视频文案'
+        mock_file.__enter__ = MagicMock(return_value=mock_file)
+        mock_file.__exit__ = MagicMock(return_value=False)
+
+        with patch('workflow_controller.open', MagicMock(return_value=mock_file)):
+            controller = SelfMediaController()
+            result = controller._extract_video_content('https://douyin.com/video/123')
+
+            assert result is not None
+            assert '视频文案' in result
+
+    @patch('workflow_controller.os.getenv')
+    def test_extract_video_content_missing_api_key(self, mock_getenv):
+        """API Key 缺失时返回 None"""
+        from workflow_controller import SelfMediaController
+
+        mock_getenv.return_value = None
+        controller = SelfMediaController()
+        result = controller._extract_video_content('https://douyin.com/video/123')
+
+        assert result is None
+
+    def test_extract_video_content_non_douyin_url(self):
+        """非抖音 URL 返回 None"""
+        from workflow_controller import SelfMediaController
+
+        controller = SelfMediaController()
+        result = controller._extract_video_content('https://bilibili.com/video/123')
+
+        assert result is None
