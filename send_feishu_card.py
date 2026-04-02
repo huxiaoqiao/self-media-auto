@@ -95,6 +95,36 @@ def send_card(token: str, receive_id: str, card: dict) -> bool:
 
 # ============ 卡片模板 ============
 
+def _format_topic_data(t: dict) -> str:
+    """根据可用字段自动格式化选题数据行"""
+    parts = []
+    if t.get('author'):
+        parts.append("👤 " + str(t['author']))
+    if t.get('likes') is not None:
+        parts.append("👍 " + str(t['likes']) + " 赞")
+    if t.get('comments') is not None:
+        parts.append("💬 " + str(t['comments']) + " 评论")
+    if t.get('score') is not None:
+        parts.append("🔥 " + str(t['score']) + " 热度")
+    return " | ".join(parts) if parts else "暂无数据"
+
+
+def _format_topic_analysis(t: dict) -> str:
+    """根据可用字段自动生成爆点解读"""
+    if t.get('analysis'):
+        return str(t['analysis'])
+    title = str(t.get('title', ''))
+    if t.get('score') and int(t.get('score', 0)) > 10000:
+        return "热度爆表，全网刷屏"
+    if '源码' in title or '代码' in title or 'Source' in title:
+        return "源码泄露引爆开发者圈，技术圈必看"
+    if '开源' in title or 'Open' in title:
+        return "开源项目再掀热潮，社区关注度高"
+    if 'AI' in title and ('超越' in title or '吊打' in title or '碾压' in title):
+        return "AI 模型横评，对比强烈引发讨论"
+    return "爆款选题，值得深入解读"
+
+
 def build_topic_list_card(topics: list, industry: str = "") -> dict:
     """选题集合卡片 - 一次展示多个选题"""
     elements = []
@@ -102,24 +132,18 @@ def build_topic_list_card(topics: list, industry: str = "") -> dict:
     elements.append({"tag": "hr"})
 
     for i, t in enumerate(topics):
-        # 序号用 i+1（纯数字）
         topic_num = i + 1
-
-        # 提取干净的标题和 URL
         title = str(t.get('title', '未知选题')).strip()
         topic_url = t.get('url', '') or t.get('id', '')
-
-        # 防御性：如果标题看起来像 URL，尝试使用 data 或截断
         if title.startswith('http'):
             title = f"选题 {topic_num}"
-
-        # 提取 GUID
         guid = t.get('guid', str(topic_num))
+        data_str = _format_topic_data(t)
+        analysis_str = _format_topic_analysis(t)
 
-        # 使用 GUID 作为按钮值，彻底解决 ID 冲突
         elements.append({
             "tag": "markdown",
-            "content": f"**🔥 [{topic_num}] {title}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({topic_url})"
+            "content": f"**🔥 [{topic_num}] {title}**\n📊 {data_str}\n💡 {analysis_str}\n🔗 [原文链接]({topic_url})"
         })
         elements.append({
             "tag": "action",
@@ -133,7 +157,6 @@ def build_topic_list_card(topics: list, industry: str = "") -> dict:
         if i < len(topics) - 1:
             elements.append({"tag": "hr"})
 
-    # Bottom action buttons (with descriptions)
     elements.append({"tag": "hr"})
     elements.append({
         "tag": "action",

@@ -327,8 +327,12 @@ class SelfMediaController:
                 if last_id:
                     logger.info("使用缓存的 last_id: %s", last_id)
         else:
-            # 强制刷新，清空 last_id，获取最新选题
-            logger.info("refresh=True，获取最新选题")
+            # refresh=True 时，只有命令行没传 last_id 才清空，获取最新选题
+            # 如果命令行明确传了 --last_id，则尊重用户输入
+            if last_id is None:
+                logger.info("refresh=True 且未传 --last_id，获取最新选题")
+            else:
+                logger.info("refresh=True 但命令行传了 --last_id=%s，尊重用户输入", last_id)
 
         print("[嗅探系统] 启动 [嗅探子系统 - 次幂数据版]...")
         logger.info("[嗅探系统] 启动 [嗅探子系统  次幂数据版]...")
@@ -409,9 +413,16 @@ class SelfMediaController:
         print("📥 [1/2] 正在获取次幂数据 Access Token...")
         logger.info("[POST] Publishing step completed")
         try:
-            token_resp = requests.post(f"{api_base}/api/v2/token", json={"app_id": cimi_app_id, "app_secret": cimi_app_secret}, headers=headers, timeout=10)
+            # ========== 网络请求日志：Token 请求 ==========
+            token_payload = {"app_id": cimi_app_id, "app_secret": cimi_app_secret}
+            logger.info(">>> [HTTP REQUEST] POST %s", f"{api_base}/api/v2/token")
+            logger.info(">>> [REQUEST PAYLOAD] %s", json.dumps(token_payload, ensure_ascii=False))
+            # ===========================================
+            token_resp = requests.post(f"{api_base}/api/v2/token", json=token_payload, headers=headers, timeout=10)
+            logger.info(">>> [HTTP RESPONSE] Status: %s", token_resp.status_code)
             token_resp.raise_for_status()
             access_token = token_resp.json()["data"]["access_token"]
+            logger.info(">>> [TOKEN OK] access_token=%s", access_token[:10] + "..." if len(access_token) > 10 else access_token)
         except Exception as e:
             print(f"❌ 请求 Token 接口时发生异常: {e}")
             logger.error("[STATE] Save failed: %s", e, exc_info=True)
@@ -424,9 +435,14 @@ class SelfMediaController:
             payload = {"category": cimi_category_en, "read_num": 1000}
             if last_id:
                 payload["last_id"] = last_id
-            
-            articles_resp = requests.post(f"{api_base}/api/v2/hot/articles?access_token={access_token}", 
+
+            # ========== 网络请求日志：文章列表请求 ==========
+            logger.info(">>> [HTTP REQUEST] POST %s", f"{api_base}/api/v2/hot/articles?access_token={access_token[:10]}...")
+            logger.info(">>> [REQUEST PAYLOAD] category=%s, read_num=1000, last_id=%s", cimi_category_en, last_id)
+            # ==============================================
+            articles_resp = requests.post(f"{api_base}/api/v2/hot/articles?access_token={access_token}",
                                          json=payload, headers=headers, timeout=15)
+            logger.info(">>> [HTTP RESPONSE] Status: %s", articles_resp.status_code)
             articles_data = articles_resp.json()
             items = articles_data.get("data", {}).get("items", [])
             for item in items[:15]:
