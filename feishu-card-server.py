@@ -1347,18 +1347,23 @@ class FeishuHandler(BaseHTTPRequestHandler):
             if not script_full:
                 script_full = "（未生成脚本）"
 
-            self.send_text(token, "✨ 改写完成，请分别审核【脚本】和【文章】...")
+            generate_script = os.getenv("GENERATE_VIDEO_SCRIPT", "FALSE").upper() == "TRUE"
 
-            script_card = self.build_review_card_v2(
-                cover_path="",
-                title=f"🎬 短视频脚本 | {title}",
-                content=script_full,
-                tags="脚本",
-                review_id="script_01",
-                template="orange",
-                header_title="🎬 脚本审核"
-            )
-            self.send_card(token, script_card)
+            if generate_script:
+                self.send_text(token, "✨ 改写完成，请分别审核【脚本】和【文章】...")
+
+                script_card = self.build_review_card_v2(
+                    cover_path="",
+                    title=f"🎬 短视频脚本 | {title}",
+                    content=script_full,
+                    tags="脚本",
+                    review_id="script_01",
+                    template="orange",
+                    header_title="🎬 脚本审核"
+                )
+                self.send_card(token, script_card)
+            else:
+                self.send_text(token, "✨ 改写完成，请审核【文章】...")
 
             article_card = self.build_review_card_v2(
                 cover_path="",
@@ -1598,19 +1603,36 @@ class FeishuHandler(BaseHTTPRequestHandler):
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
             state = json.load(f)
 
+        generate_script = os.getenv("GENERATE_VIDEO_SCRIPT", "FALSE").upper() == "TRUE"
+
         # 检查是否已经触发过视觉工程（防止重复点击）
-        if state.get('script_approved') and state.get('article_approved'):
-            print("[DEBUG] Both already approved, visual already triggered", flush=True)
-            self.send_text(token, "⏳ 视觉工程已在运行中，请稍候...")
-            return
+        if generate_script:
+            if state.get('script_approved') and state.get('article_approved'):
+                print("[DEBUG] Both already approved, visual already triggered", flush=True)
+                self.send_text(token, "⏳ 视觉工程已在运行中，请稍候...")
+                return
+        else:
+            if state.get('article_approved'):
+                print("[DEBUG] Article already approved, visual already triggered", flush=True)
+                self.send_text(token, "⏳ 视觉工程已在运行中，请稍候...")
+                return
 
         state[flag_key] = True
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
 
         # 检查是否两个都已完成
-        if state.get('script_approved') and state.get('article_approved'):
-            self.send_text(token, "🎉 脚本 + 文章均已审核完成！\n\n🎨 正在启动视觉工程：分析内容、生成封面图与文章插图...\n\n(预计 1-2 分钟，请稍候)")
+        all_approved = False
+        if generate_script:
+            if state.get('script_approved') and state.get('article_approved'):
+                all_approved = True
+        else:
+            if state.get('article_approved'):
+                all_approved = True
+
+        if all_approved:
+            msg = "🎉 脚本 + 文章均已审核完成！\n\n🎨 正在启动视觉工程：分析内容、生成封面图与文章插图...\n\n(预计 1-2 分钟，请稍候)" if generate_script else "🎉 文章已审核完成！\n\n🎨 正在启动视觉工程：分析内容、生成封面图与文章插图...\n\n(预计 1-2 分钟，请稍候)"
+            self.send_text(token, msg)
             time.sleep(1)
             state['script_approved'] = False
             state['article_approved'] = False
@@ -1618,7 +1640,8 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 json.dump(state, f, ensure_ascii=False, indent=2)
             self.run_final_and_send_card(token)
         else:
-            self.send_text(token, f"✅ 【{kind}】已确认通过。\n\n还剩 1 项确认后将自动进入视觉工程阶段。")
+            rem = "还剩 1 项确认后将自动进入视觉工程阶段。" if generate_script else ""
+            self.send_text(token, f"✅ 【{kind}】已确认通过。\n\n{rem}")
 
     def run_final_and_send_card(self, token, model='seedream'):
         """Generate visuals and send final publish card."""
