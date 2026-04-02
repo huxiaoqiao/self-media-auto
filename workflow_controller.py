@@ -495,30 +495,51 @@ class SelfMediaController:
                 result = read_url(article_url, verbose=False)
                 if result.get("success"):
                     raw_content = result.get("content", "")
-            except Exception: pass
+            except ImportError as e:
+                logger.warning("url_reader 模块导入失败：%s", e)
+            except Exception as e:
+                logger.warning("url_reader 内容提取失败：%s", e)
 
             # 2. 次幂 API 保底
             if not raw_content or len(raw_content) < 50:
                 try:
                     cid, csec = os.getenv("CIMI_APP_ID"), os.getenv("CIMI_APP_SECRET")
                     if cid and csec:
-                        auth = requests.post("https://api.cimidata.com/api/v2/token", json={"app_id": cid, "app_secret": csec}, timeout=10).json()
-                        token = auth["data"]["access_token"]
-                        dr = requests.post(f"https://api.cimidata.com/api/v3/articles/detail?access_token={token}", json={"url": article_url}, timeout=20).json()
-                        raw_content = re.sub(r'<[^>]+>', ' ', dr["data"].get("html", "")).strip()
-                except Exception: pass
+                        auth_resp = requests.post("https://api.cimidata.com/api/v2/token", json={"app_id": cid, "app_secret": csec}, timeout=10)
+                        auth_resp.raise_for_status()
+                        auth = auth_resp.json()
+                        token = auth.get("data", {}).get("access_token", "")
+                        if token:
+                            detail_resp = requests.post(f"https://api.cimidata.com/api/v3/articles/detail?access_token={token}", json={"url": article_url}, timeout=20)
+                            detail_resp.raise_for_status()
+                            dr = detail_resp.json()
+                            raw_content = re.sub(r'<[^>]+>', ' ', dr["data"].get("html", "")).strip()
+                except requests.exceptions.RequestException as e:
+                    logger.warning("次幂 API 请求失败：%s", e)
+                except (KeyError, TypeError) as e:
+                    logger.warning("次幂 API 响应解析失败：%s", e)
 
         elif source == "抖音":
             try:
                 dj = os.path.join(self.workspace, "douyin-download-1.2.0", "douyin.js")
+                if not os.path.exists(dj):
+                    logger.warning("抖音提取脚本不存在：%s", dj)
+                    return "（系统保底）抖音提取脚本未找到"
                 out = os.path.join(os.getcwd(), 'cache', 'douyin_extract')
                 os.makedirs(out, exist_ok=True)
-                r = subprocess.run(["node", dj, "extract", article_url, "-o", out, "--no-segment"], capture_output=True, text=True, encoding="utf-8")
+                r = subprocess.run(["node", dj, "extract", article_url, "-o", out, "--no-segment"], capture_output=True, text=True, encoding="utf-8", timeout=60)
+                if r.returncode != 0:
+                    logger.warning("抖音提取失败：%s", r.stderr)
+                    return "（系统保底）抖音提取失败"
                 m = re.search(r"保存位置:\s*(.+?\.md)", r.stdout)
                 if m:
                     with open(m.group(1).strip(), 'r', encoding='utf-8') as f:
                         raw_content = f.read().split("## 文案内容")[-1].strip()
-            except Exception: pass
+            except subprocess.TimeoutExpired:
+                logger.warning("抖音提取超时")
+                raw_content = "（系统保底）抖音提取超时"
+            except Exception as e:
+                logger.warning("抖音提取异常：%s", e)
 
         if not raw_content or len(raw_content) < 30:
             raw_content = f"（系统保底）关于《{title}》的分析：核心是极致行动与复利思维。"
@@ -656,8 +677,6 @@ class SelfMediaController:
                             p_key = "".join(c for c in cr.json()["choices"][0]["message"]["content"].strip().lower() if c.isalnum())
                             if p_key in conf["templates"]: cat = p_key
                     except Exception: pass
-                    print(f"✨ 场景适配：【{conf['templates'][cat]['name']}】")
-                    logger.info("状态更新")
                     content_category = cat  # 记录分类供后续排版使用
 
                     raw_prompt = conf["templates"].get(cat, conf["templates"]["insight"])["prompt"]
@@ -879,7 +898,9 @@ class SelfMediaController:
                 return None
         else:
             api_key = os.getenv("DASHSCOPE_API_KEY")
-            if not api_key: return None
+            if not api_key: 
+                logger.error("DASHSCOPE_API_KEY 未配置")
+                return None
             model_id = {"z": "z-image-turbo", "qwen": "qwen-image-2.0-pro", "wan": "wan2.6-t2i"}.get(model_type, "wan2.6-t2i")
             url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
             headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
@@ -887,7 +908,9 @@ class SelfMediaController:
             try:
                 resp = requests.post(url, headers=headers, json=data, timeout=60).json()
                 return resp.get("output", {}).get("choices", [{}])[0].get("message", {}).get("content", [{}])[0].get("image")
-            except Exception: return None
+            except Exception as e:
+                logger.error("Dashscope generation failed: %s", e)
+                return None
 
     def download_image_file(self, url, folder=None):
         logger.debug("下载图片 | url=%s", url[:60] if url else "")
@@ -901,16 +924,19 @@ class SelfMediaController:
             if r.status_code == 200:
                 with open(filepath, "wb") as f: f.write(r.content)
                 return filepath
-        except Exception: pass
+            else:
+                logger.error("图片下载失败，状态码: %d", r.status_code)
+        except Exception as e:
+            logger.error("图片下载异常: %s", e)
         return None
-
     def load_visual_config(self):
         try:
             config_path = os.path.join(os.path.dirname(__file__), 'prompts_manager.json')
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     return json.load(f).get('visual_config', {})
-        except Exception: pass
+        except Exception as e:
+            logger.error("加载视觉配置失败: %s", e)
         return {}
 
     def analyze_visuals(self, article_content, category="insight"):
@@ -921,33 +947,21 @@ class SelfMediaController:
         if not api_key: return None
         
         v_config = self.load_visual_config()
-        # 准则和风格完全对齐 prompts_manager.json
         rules_text = "\n".join([f"- {r}" for r in v_config.get('base_principles', [])])
         style_match = v_config.get('style_matching', {}).get(category, {
             "rendering": "3d-render", "palette": "elegant", "mood": "balanced"
         })
 
-        # 视觉导演指令：动态拼装，拒绝硬编码
         sys_p = f"""你是一个视觉分析专家。请为分类为 '{category}' 的自媒体文章规划视觉方案。
-
-【核心设计红线】：
-{rules_text}
-
+【核心设计红线】：{rules_text}
 【视觉风格指导 (基于分类匹配)】：
 - 渲染方案: {style_match.get('rendering')} | 色彩体系: {style_match.get('palette')} | 情绪基调: {style_match.get('mood')}
-
 任务：规划 1 张封面 (2.35:1) 和 2-3 张插图。提示词必须是全中文。
-
 输出 JSON 格式要求:
 {{
   "cover": {{ "type": "hero/minimal", "prompt": "全中文生图词", "rendering": "{style_match.get('rendering')}" }},
   "illustrations": [
-    {{
-      "prompt": "全中文插图生图提示词",
-      "type": "infographic/flowchart/scene",
-      "ratio": "16:9 / 4:3 / 1:1 / 3:4",
-      "pos": "对应段落"
-    }}
+    {{ "prompt": "全中文插图生图提示词", "type": "infographic/flowchart/scene", "ratio": "16:9 / 4:3 / 1:1 / 3:4", "pos": "对应段落" }}
   ]
 }}"""
         
@@ -963,108 +977,13 @@ class SelfMediaController:
                 timeout=60)
             return json.loads(resp.json()["choices"][0]["message"]["content"])
         except Exception as e: 
-            print(f"⚠️ 视觉分析异常: {e}")
-            logger.error("状态更新")
+            logger.error("视觉分析异常: %s", e)
             return None
-
-    def download_image_file(self, url, folder=None):
-        logger.debug("下载图片 | url=%s", url[:60] if url else "")
-        if not folder:
-            folder = os.path.join(self.workspace, 'assets', datetime.now().strftime('%Y-%m-%d'))
-        os.makedirs(folder, exist_ok=True)
-        try:
-            filename = f"gen_{datetime.now().strftime('%H%M%S')}.png"
-            filepath = os.path.join(folder, filename)
-            r = requests.get(url, timeout=30)
-            if r.status_code == 200:
-                with open(filepath, "wb") as f: f.write(r.content)
-                return filepath
-        except Exception: pass
-        return None
-
-    def load_visual_config(self):
-        try:
-            config_path = os.path.join(os.path.dirname(__file__), 'prompts_manager.json')
-            if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    return json.load(f).get('visual_config', {})
-        except Exception: pass
-        return {}
-
-    def analyze_visuals(self, article_content, category="insight"):
-        logger.info("启动 analyze_visuals | category=%s", category)
-        import httpx
-        api_key = os.getenv("OPENAI_API_KEY")
-        api_base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        if not api_key: return None
-        
-        v_config = self.load_visual_config()
-        # 准则和风格完全对齐 prompts_manager.json
-        rules_text = "\n".join([f"- {r}" for r in v_config.get('base_principles', [])])
-        style_match = v_config.get('style_matching', {}).get(category, {
-            "rendering": "3d-render", "palette": "elegant", "mood": "balanced"
-        })
-
-        # 视觉导演指令：动态拼装，拒绝硬编码
-        sys_p = f"""你是一个视觉分析专家。请为分类为 '{category}' 的自媒体文章规划视觉方案。
-
-【核心设计红线】：
-{rules_text}
-
-【视觉风格指导 (基于分类匹配)】：
-- 渲染方案: {style_match.get('rendering')} | 色彩体系: {style_match.get('palette')} | 情绪基调: {style_match.get('mood')}
-
-任务：规划 1 张封面 (2.35:1) 和 2-3 张插图。提示词必须是全中文。
-
-输出 JSON 格式要求:
-{{
-  "cover": {{ "type": "hero/minimal", "prompt": "全中文生图词", "rendering": "{style_match.get('rendering')}" }},
-  "illustrations": [
-    {{
-      "prompt": "全中文插图生图提示词",
-      "type": "infographic/flowchart/scene",
-      "ratio": "16:9 / 4:3 / 1:1 / 3:4",
-      "pos": "对应段落"
-    }}
-  ]
-}}"""
-        
-        try:
-            resp = httpx.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": "deepseek-chat", 
-                    "messages": [
-                        {"role": "system", "content": sys_p},
-                        {"role": "user", "content": f"内容：{article_content[:3000]}"}
-                    ], 
-                    "response_format": {"type": "json_object"}}, 
-                timeout=60)
-            return json.loads(resp.json()["choices"][0]["message"]["content"])
-        except Exception as e: 
-            print(f"⚠️ 视觉分析异常: {e}")
-            logger.error("状态更新")
-            return None
-
-    def post_to_wechat(self, file_path, method="browser", cover_path=None, title=None):
-        import subprocess
-        print(f"🚀 正在通过 [{method}] 发布文章...")
-        logger.info("状态更新")
-        scripts_dir = os.path.join(self.workspace, 'baoyu-post-to-wechat', 'scripts')
-        cmd = ["bun", "wechat-article.ts", "--markdown", file_path, "--theme", "default"]
-        if title: cmd.extend(["--title", title])
-        if cover_path: cmd.extend(["--cover", cover_path])
-        try:
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
-            res = subprocess.run(cmd, cwd=scripts_dir, env=env)
-            return res.returncode == 0
-        except Exception: return False
 
     def run_visuals(self, model_type="seedream"):
         """钢铁意志视觉引擎：绝对不中断，成一张推一张"""
         logger.info("启动 run_visuals | model=%s", model_type)
         state = self.load_state()
-        # 强制初始化并清空之前的图片记录（防止重试时图片不断追加）
         state['article_images'] = []
         state['cover_image'] = ""
         self.save_state(state)
@@ -1072,66 +991,41 @@ class SelfMediaController:
         draft_file = state.get('draft_file')
         if not draft_file or not os.path.exists(draft_file): 
             print("[FEISHU_STATUS] ERR=未找到草稿文件", flush=True)
-            logger.info("状态更新")
             return False
             
         print(f"\n🎨 [视觉导演] 开启弹性生成 (引擎: {model_type})...", flush=True)
-        logger.info("状态更新")
         with open(draft_file, "r", encoding="utf-8") as f: content = f.read()
 
-        # 1. 方案分析
-        plan = self.analyze_visuals(content)
+        plan = self.analyze_visuals(content, category=state.get('content_category', 'insight'))
         if not plan:
             print("[FEISHU_STATUS] WARN=分析方案失败，使用兜底图", flush=True)
-            logger.error("状态更新")
             plan = {"cover": {"prompt": "大胡老师的数字花园"}, "illustrations": []}
 
-        # 2. 生成封面 (容错机制)
         try:
             cp = plan.get("cover", {}).get("prompt", "封面图")
             print(f"🖼️ [封面] 准备构建: {cp[:30]}...", flush=True)
-            logger.info("状态更新")
             c_url = self.generate_image(cp, model_type=model_type, size="3072x1308")
             if c_url:
                 l_cover = self.download_image_file(c_url, folder=os.path.join(self.workspace, 'assets', 'covers'))
                 if l_cover:
                     state['cover_image'] = l_cover
                     self.save_state(state)
-                    # 钢铁级实时推送协议
                     print(f"[FEISHU_PREVIEW] TYPE=COVER PATH={l_cover}", flush=True)
-                    logger.info("状态更新")
-                else:
-                    print("[FEISHU_STATUS] ERR=封面下载失败", flush=True)
-                    logger.error("状态更新")
-            else:
-                print("[FEISHU_STATUS] WARN=封面API返回为空(风控?)", flush=True)
-                logger.warning("状态更新")
         except Exception as e:
-            print(f"[FEISHU_STATUS] ERR=封面流程异常:{str(e)[:50]}", flush=True)
-            logger.error("状态更新")
+            logger.error("封面生成失败: %s", e)
 
-        # 3. 生成插图 (单图闭环)
         ills = plan.get("illustrations", [])
         if ills:
             print(f"\n🎨 [排期] 共有 {len(ills)} 张插图待产...", flush=True)
-            logger.info("状态更新")
-            
             ratio_map = {"16:9": "2560x1440", "4:3": "2224x1668", "1:1": "1920x1920", "3:4": "1668x2224"}
-
             for i, info in enumerate(ills, 1):
                 p = info.get("prompt", "")
                 if not p: continue
-                
-                # 注入风格统一
                 style = plan.get("cover", {}).get('rendering', 'flat-vector')
                 p = f"{p}, style: {style}, minimalism, studio light, ultra hd"
-                
                 ratio = info.get("ratio", "1:1")
                 size = ratio_map.get(ratio, "1920x1920")
-
                 print(f"🖼️ [进度 {i}/{len(ills)}] 启动渲染 ({ratio})...", flush=True)
-                logger.info("状态更新")
-                
                 try:
                     i_url = self.generate_image(p, model_type=model_type, size=size)
                     if i_url:
@@ -1139,28 +1033,16 @@ class SelfMediaController:
                         if l_path:
                             state['article_images'].append(l_path)
                             self.save_state(state)
-                            # 钢铁级实时推送协议
                             print(f"[FEISHU_PREVIEW] TYPE=ILLUS INDEX={i} PATH={l_path}", flush=True)
-                            logger.info("状态更新")
-                        else:
-                            print(f"[FEISHU_STATUS] ERR=插图{i}下载失败", flush=True)
-                            logger.error("状态更新")
-                    else:
-                        print(f"[FEISHU_STATUS] WARN=插图{i}API无产出", flush=True)
-                        logger.warning("状态更新")
                 except Exception as ie:
-                    print(f"[FEISHU_STATUS] ERR=插图{i}异常:{str(ie)[:50]}", flush=True)
-                    logger.error("状态更新")
-            
+                    logger.error("插图 %d 生成失败: %s", i, ie)
             self.save_state(state)
             
         print(f"\n[FEISHU_STATUS] DONE=已产出 {len(state.get('article_images', []))} 张图", flush=True)
-        logger.info("状态更新")
         return True
 
     def post_to_wechat(self, draft_file, method="api", cover_path=None, title=None):
         print("\n🚀 正在将内容同步至公众号草稿箱...", flush=True)
-        logger.info("状态更新")
         state = self.load_state()
         article_images = state.get('article_images', [])
         
@@ -1169,168 +1051,61 @@ class SelfMediaController:
                 content = f.read()
 
             is_html = str(draft_file).endswith('.html')
-            
             if is_html:
                 if article_images:
-                    unmatched_images = []
+                    unmatched = []
                     for i, img_path in enumerate(article_images):
-                        ph1 = f"<!-- IMG:{i} -->"
-                        ph2 = f"&lt;!-- IMG:{i} --&gt;"
-                        new_img_tag = f'<img src="XIMGPH_{i}" data-local-path="{os.path.abspath(img_path)}" style="max-width: 100%; height: auto; display: block; margin: 20px auto;" />'
-                        
+                        ph1, ph2 = f"<!-- IMG:{i} -->", f"&lt;!-- IMG:{i} --&gt;"
+                        tag = f'<img src="XIMGPH_{i}" data-local-path="{os.path.abspath(img_path)}" style="max-width: 100%; height: auto; display: block; margin: 20px auto;" />'
                         if ph1 in content or ph2 in content:
-                            content = content.replace(ph1, new_img_tag).replace(ph2, new_img_tag)
-                            print(f"[POST] 🖼️  插图 {i} 已精准插入占位符 IMG:{i}", flush=True)
-                            logger.info("状态更新")
+                            content = content.replace(ph1, tag).replace(ph2, tag)
                         else:
-                            # 占位符不存在，留待后处理
-                            unmatched_images.append((i, img_path, new_img_tag))
-                    
-                    # 对没找到占位符的图片，均匀分布插入 </section> 断点
-                    if unmatched_images:
-                        section_positions = [m.start() for m in __import__('re').finditer(r'</section>', content)]
-                        if section_positions:
-                            # 均匀采样 section 断点
-                            step = max(1, len(section_positions) // (len(unmatched_images) + 1))
-                            chosen_positions = [section_positions[min(i * step, len(section_positions)-1)] for i, _ in enumerate(unmatched_images)]
-                            # 从后往前插（避免破坏之前的位置索引）
-                            for (i, _, tag), pos in sorted(zip(unmatched_images, chosen_positions), key=lambda x: x[1], reverse=True):
+                            unmatched.append(tag)
+                    if unmatched:
+                        sections = [m.start() for m in re.finditer(r'</section>', content)]
+                        if sections:
+                            step = max(1, len(sections) // (len(unmatched) + 1))
+                            for i, tag in enumerate(unmatched):
+                                pos = sections[min(i * step, len(sections)-1)]
                                 content = content[:pos] + f"\n{tag}\n" + content[pos:]
-                                print(f"[POST] 🖼️  插图 {i} 均匀插入 section 断点", flush=True)
-                                logger.info("状态更新")
-                        elif "</div>" in content:
-                            pos = content.rfind("</div>")
-                            tags_block = "\n".join(tag for _, _, tag in unmatched_images)
-                            content = content[:pos] + f"\n{tags_block}\n" + content[pos:]
-                            print(f"[POST] 🖼️  {len(unmatched_images)} 张未匹配插图追加至 </div> 前", flush=True)
-                            logger.info("状态更新")
                         else:
-                            for _, _, tag in unmatched_images:
-                                content += f"\n{tag}"
-                            print(f"[POST] 🖼️  {len(unmatched_images)} 张未匹配插图追加至末尾", flush=True)
-                            logger.info("状态更新")
-                    
-                    # ⚠️ 关键：清扫所有残余占位符（防止 AI 多写的占位符出现在公众号文章里）
-                    import re as _re
-                    leftover = _re.findall(r'<!--\s*IMG:\d+\s*-->', content)
-                    if leftover:
-                        print(f"[POST] 🧹 清除 {len(leftover)} 个残余图片占位符: {leftover}", flush=True)
-                        logger.info("状态更新")
-                    content = _re.sub(r'<!--\s*IMG:\d+\s*-->', '', content)
-                    # 同时清除 HTML 实体编码的占位符
-                    content = _re.sub(r'&lt;!--\s*IMG:\d+\s*--&gt;', '', content)
-                    
-                    with open(draft_file, 'w', encoding='utf-8') as f:
-                        f.write(content)
-                else:
-                    # 如果没有插图，也清扫占位符（防止 AI 提前写的占位符残留）
-                    import re as _re
-                    cleaned = _re.sub(r'<!--\s*IMG:\d+\s*-->', '', content)
-                    cleaned = _re.sub(r'&lt;!--\s*IMG:\d+\s*--&gt;', '', cleaned)
-                    if cleaned != content:
-                        print(f"[POST] 🧹 无插图模式：清除残余占位符", flush=True)
-                        logger.info("状态更新")
-                        with open(draft_file, 'w', encoding='utf-8') as f:
-                            f.write(cleaned)
+                            content += "\n" + "\n".join(unmatched)
+                content = re.sub(r'(?:<!--\s*IMG:\d+\s*-->|&lt;!--\s*IMG:\d+\s*--&gt;)', '', content)
+                with open(draft_file, 'w', encoding='utf-8') as f: f.write(content)
             else:
-                # Insert images evenly among H3 headings or blank lines
                 if article_images and "![插图]" not in content:
                     lines = content.split('\n')
-                    insert_points = [i for i, line in enumerate(lines) if line.startswith('### ')]
-                    if len(insert_points) < len(article_images):
-                        # fallback to double newlines if not enough headings
-                        insert_points = [i for i, line in enumerate(lines) if line.strip() == '']
-                    
-                    # Deduplicate and sort points
-                    insert_points = sorted(list(set(insert_points)))
-                    
-                    if insert_points:
-                        for img_idx, img_path in enumerate(article_images):
-                            pt_idx = (img_idx * len(insert_points)) // len(article_images)
-                            if pt_idx < len(insert_points):
-                                line_idx = insert_points[pt_idx] + img_idx * 2 # offset for previous insertions
-                                lines.insert(line_idx, f'\n![插图]({os.path.abspath(img_path)})\n')
-                        
-                        content = '\n'.join(lines)
-                        with open(draft_file, 'w', encoding='utf-8') as f:
-                            f.write(content)
+                    pts = [i for i, l in enumerate(lines) if l.startswith('### ')] or [i for i, l in enumerate(lines) if not l.strip()]
+                    pts = sorted(list(set(pts)))
+                    for i, img in enumerate(article_images):
+                        p_idx = (i * len(pts)) // len(article_images)
+                        lines.insert(pts[p_idx] + i * 2, f'\n![插图]({os.path.abspath(img)})\n')
+                    with open(draft_file, 'w', encoding='utf-8') as f: f.write('\n'.join(lines))
 
-            # Build script arguments
+            # 执行命令准备
+            import shutil
+            bun_path = shutil.which("bun") or shutil.which("bun.exe")
             npx_cmd = "npx.cmd" if os.name == "nt" else "npx"
             baoyu_dir = os.path.join(self.workspace, "baoyu-post-to-wechat")
             
-            # ==== 智能主题选择 ====
-            # 优先级: 1. 文章分类自动映射  2. .env WECHAT_THEME 手动指定  3. 默认 default
-            #
-            # ⚠️  注意：baoyu-post-to-wechat 只支持本地内置主题（vendor/baoyu-md/src/themes/*.css）
-            #    仅 4 个可用: default / grace / simple / modern
-            #    wechat_themes/api.yaml 里的 elegant-gold/bold-red 等属于外部 md2wechat.app API
-            #    直接传给 --theme 会报 Missing theme CSS 错误
-            CATEGORY_THEME_MAP = {
-                "hardcore":  "modern",   # 硬核干货/SOP  → 现代感强，干净有力
-                "insight":   "grace",    # 洞察认知      → 优雅精致，字体柔美
-                "news":      "default",  # 热点新闻      → 经典微信，通用易读
-                "emotional": "grace",    # 情感共鸣      → 优雅舒缓，排版流畅
-                "risk":      "modern",   # 风险揭秘/避坑  → 现代严肃，视觉聚焦
-                "tool":      "simple",   # 工具测评      → 极简直观，代码友好
-                "growth":    "simple",   # 成长/职场      → 简洁清晰，轻松易读
-                "crossover": "grace",    # 跨界思维      → 优雅精致，气质独特
-            }
-            content_category = state.get('content_category', '')
-            env_theme = os.environ.get("WECHAT_THEME", "").strip().strip('"')
-            if content_category and content_category in CATEGORY_THEME_MAP:
-                wechat_theme = CATEGORY_THEME_MAP[content_category]
-                print(f"[POST] 🎨 根据文章分类 [{content_category}] 自动选择主题: {wechat_theme}", flush=True)
-                logger.info("状态更新")
-            elif env_theme:
-                wechat_theme = env_theme
-                print(f"[POST] 📋 使用 .env 手动指定主题: {wechat_theme}", flush=True)
-                logger.info("状态更新")
-            else:
-                wechat_theme = "default"
-                print(f"[POST] 📋 使用默认主题: {wechat_theme}", flush=True)
-                logger.info("状态更新")
+            THEMES = {"hardcore": "modern", "insight": "grace", "news": "default", "emotional": "grace", "risk": "modern", "tool": "simple", "growth": "simple"}
+            wechat_theme = THEMES.get(state.get('content_category', ''), os.environ.get("WECHAT_THEME", "default"))
             
-            script_args = [npx_cmd, "-y", "bun"]
-            if method == "browser":
-                script_path = os.path.join(baoyu_dir, "scripts", "wechat-article.ts")
-                script_args.append(script_path)
-            else:
-                script_path = os.path.join(baoyu_dir, "scripts", "wechat-api.ts")
-                script_args.append(script_path)
-                
-            if is_html:
-                script_args.extend(["--html", draft_file])
-                print(f"[POST] 📄 发布模式: HTML 直传 (跳过主题渲染)", flush=True)
-                logger.info("状态更新")
-            else:
-                if method == "browser":
-                    script_args.extend(["--markdown", draft_file, "--theme", wechat_theme])
-                else:
-                    script_args.extend([draft_file, "--theme", wechat_theme])
-                print(f"[POST] 📄 发布模式: Markdown → 主题渲染 ({wechat_theme})", flush=True)
-                logger.info("状态更新")
-                
-            if cover_path and os.path.exists(cover_path):
-                script_args.extend(["--cover", os.path.abspath(cover_path)])
-                print(f"[POST] 🖼️  封面图: {os.path.basename(cover_path)}", flush=True)
-                logger.info("状态更新")
-            if title:
-                script_args.extend(["--title", title])
-                print(f"[POST] 📌 文章标题: {title}", flush=True)
-                logger.info("状态更新")
+            script = os.path.join(baoyu_dir, "scripts", "wechat-article.ts" if method == "browser" else "wechat-api.ts")
+            args = [bun_path, script] if bun_path else [npx_cmd, "-y", "bun", script]
             
-            print(f"[POST] 🚀 执行命令: {' '.join(script_args[:5])} ...", flush=True)
-            logger.info("状态更新")
-            proc = subprocess.Popen(script_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
-            for line in proc.stdout:
-                print(line, end='', flush=True)
-                logger.info("状态更新")
+            if is_html: args.extend(["--html", draft_file])
+            else: args.extend(["--markdown", draft_file, "--theme", wechat_theme])
+            if cover_path and os.path.exists(cover_path): args.extend(["--cover", os.path.abspath(cover_path)])
+            if title: args.extend(["--title", title])
+            
+            print(f"[POST] 🚀 执行发布脚本: {' '.join([os.path.basename(str(a)) for a in args])} ...")
+            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+            for line in proc.stdout: print(line, end='', flush=True)
             proc.wait()
             return proc.returncode == 0
         except Exception as e:
-            print(f"[ERROR] post_to_wechat error: {e}", flush=True)
-            logger.error("状态更新")
+            print(f"[ERROR] post_to_wechat 失败: {e}", flush=True)
             return False
 
     def run_post(self, method="api"):

@@ -35,6 +35,12 @@ load_dotenv()
 # This prevents ID collisions across different batches/pages
 TOPIC_MAP = {}
 
+# Thread lock for protecting TOPIC_MAP concurrent access
+TOPIC_MAP_LOCK = threading.Lock()
+
+# Thread lock for protecting STATE_FILE concurrent access
+STATE_FILE_LOCK = threading.Lock()
+
 # Feishu App Config (from environment variables with fallback)
 APP_ID = os.getenv("FEISHU_APP_ID", "cli_a930dedc42789cd1")
 APP_SECRET = os.getenv("FEISHU_APP_SECRET", "WOjERqoJ8OhIwIthMS3NAcJAxFDvXK2X")
@@ -53,7 +59,8 @@ def load_persistent_map():
             state = json.load(f)
             persisted = state.get('topic_map', {})
             if persisted:
-                TOPIC_MAP.update(persisted)
+                with TOPIC_MAP_LOCK:
+                    TOPIC_MAP.update(persisted)
                 print(f"[INIT] Loaded {len(TOPIC_MAP)} persistent topic mappings from state file.")
                 # 启动时自动清理过期数据
                 cleanup_expired_map(max_age_days=3)
@@ -70,7 +77,8 @@ def save_persistent_map():
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
             state = json.load(f)
 
-        state['topic_map'] = TOPIC_MAP
+        with TOPIC_MAP_LOCK:
+            state['topic_map'] = TOPIC_MAP.copy()
 
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
@@ -83,15 +91,16 @@ def cleanup_expired_map(max_age_days=3):
     """清理超过指定天数（默认 3 天）的 topic 映射"""
     global TOPIC_MAP
     cutoff = time.time() - (max_age_days * 24 * 60 * 60)
-    expired_keys = [k for k, v in TOPIC_MAP.items()
-               if v.get('created_at', 0) < cutoff]
-    for k in expired_keys:
-        TOPIC_MAP.pop(k, None)
-    if expired_keys:
-        print(f"[CLEANUP] Removed {len(expired_keys)} expired topics (older than {max_age_days} days)")
-        save_persistent_map()
-    else:
-        print(f"[CLEANUP] No expired topics to remove (retaining {len(TOPIC_MAP)} items)")
+    with TOPIC_MAP_LOCK:
+        expired_keys = [k for k, v in TOPIC_MAP.items()
+                   if v.get('created_at', 0) < cutoff]
+        for k in expired_keys:
+            TOPIC_MAP.pop(k, None)
+        if expired_keys:
+            print(f"[CLEANUP] Removed {len(expired_keys)} expired topics (older than {max_age_days} days)")
+            save_persistent_map()
+        else:
+            print(f"[CLEANUP] No expired topics to remove (retaining {len(TOPIC_MAP)} items)")
 
 
 # Initialize on import/startup
@@ -441,24 +450,26 @@ class FeishuHandler(BaseHTTPRequestHandler):
     def update_topic_context_by_id(self, token, topic_id):
         """Update workflow state with selected topic."""
         try:
-            with open(STATE_FILE, 'r', encoding='utf-8') as f:
-                state = json.load(f)
+            with STATE_FILE_LOCK:
+                with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
 
             topic_id_str = str(topic_id).strip()
             updated = False
 
             # 1. 优先从全局映射中通过 GUID 查找
-            if topic_id_str in TOPIC_MAP:
-                selected = TOPIC_MAP[topic_id_str]
-                state['topic_context'] = {
-                    'id': selected.get('id', ''),
-                    'title': selected.get('title', ''),
-                    'source': selected.get('source', ''),
-                    'author': selected.get('author', ''),
-                    'score': selected.get('score', '')
-                }
-                updated = True
-                print(f"[DEBUG] Updated topic_context via TOPIC_MAP GUID {topic_id_str}: {selected.get('title', '')[:50]}", flush=True)
+            with TOPIC_MAP_LOCK:
+                if topic_id_str in TOPIC_MAP:
+                    selected = TOPIC_MAP[topic_id_str]
+                    state['topic_context'] = {
+                        'id': selected.get('id', ''),
+                        'title': selected.get('title', ''),
+                        'source': selected.get('source', ''),
+                        'author': selected.get('author', ''),
+                        'score': selected.get('score', '')
+                    }
+                    updated = True
+                    print(f"[DEBUG] Updated topic_context via TOPIC_MAP GUID {topic_id_str}: {selected.get('title', '')[:50]}", flush=True)
 
             # 2. 如果 GUID 没中，且不是 URL，则尝试作为数字索引查找 (向上兼容老卡片)
             if not updated and not topic_id_str.startswith('http'):
@@ -503,8 +514,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
     def save_state(self, state):
         """Save workflow state to JSON file."""
         try:
-            with open(STATE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(state, f, indent=2, ensure_ascii=False)
+            with STATE_FILE_LOCK:
+                with open(STATE_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(state, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"[ERROR] save_state failed: {e}", flush=True)
             import traceback
@@ -919,7 +931,8 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     guid = str(uuid.uuid4())[:8] # 取 8 位 UUID
                     current_topic['guid'] = guid
                     current_topic['created_at'] = time.time()  # 添加时间戳用于过期清理
-                    TOPIC_MAP[guid] = current_topic
+                    with TOPIC_MAP_LOCK:
+                        TOPIC_MAP[guid] = current_topic
 
                     topics.append(current_topic)
                     current_topic = None
@@ -1010,8 +1023,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
             print("[DEBUG] run_insight_and_send_card starting", flush=True)
             os.chdir(WORKDIR)
 
-            with open(STATE_FILE, 'r', encoding='utf-8') as f:
-                state = json.load(f)
+            with STATE_FILE_LOCK:
+                with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
             topic_ctx = state.get('topic_context', {})
             title = topic_ctx.get('title', '未知选题')
             url = topic_ctx.get('id', '')
@@ -1076,8 +1090,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
             topic_id_str = action_value.split('_', 1)[1] if '_' in action_value else 'new'
             state['topic_context'] = topic_ctx
             state['current_step'] = 'waiting_for_rewrite_confirm'
-            with open(STATE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(state, f, ensure_ascii=False)
+            with STATE_FILE_LOCK:
+                with open(STATE_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(state, f, ensure_ascii=False)
 
             # Send rewrite confirm card
             card = self.build_rewrite_card(title, insight_text, topic_id_str)
