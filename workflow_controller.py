@@ -629,6 +629,44 @@ class SelfMediaController:
             logger.debug(f"[视频提取] 非抖音 URL，跳过：{url}")
         return None
 
+    def _generate_summary(self, content, title):
+        """使用 AI 生成文章摘要"""
+        if not content:
+            return ""
+
+        import os
+        import openai
+
+        # 取前 3000 字进行摘要（足够生成准确摘要）
+        truncated = content[:3000] if len(content) > 3000 else content
+
+        prompt = f"""请为以下文章生成一个简洁的中文摘要，100 字以内，直接输出摘要内容，不需要其他说明。
+文章标题：{title}
+文章内容：
+{truncated}
+摘要："""
+
+        try:
+            client = openai.OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                base_url=os.getenv("OPENAI_BASE_URL")
+            )
+            model = os.getenv("LLM_MODEL_ID", "deepseek-chat")
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.3,
+                timeout=30
+            )
+            summary = response.choices[0].message.content.strip()
+            logger.info(f"[摘要生成] 成功生成：{len(summary)} 字")
+            return summary
+        except Exception as e:
+            logger.warning(f"[摘要生成] AI 生成失败：{e}，降级到前 200 字")
+            # 降级方案：返回前 200 字
+            return truncated[:200] + "..."
+
     def run_repurpose(self, topic_id_or_cmd):
         """
         [IP 改写引擎 V2] 支持智能场景匹配、多源抓取保底、联网补全实时背景。

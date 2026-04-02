@@ -269,3 +269,54 @@ class TestExtractVideoContent:
         result = controller._extract_video_content('https://bilibili.com/video/123')
 
         assert result is None
+
+
+class TestGenerateSummary:
+    """AI 摘要生成方法测试"""
+
+    def test_generate_summary_success(self):
+        """成功生成摘要"""
+        from workflow_controller import SelfMediaController
+
+        with patch('openai.OpenAI') as mock_openai, \
+             patch('workflow_controller.os.getenv') as mock_getenv:
+            # 配置 mock
+            mock_getenv.return_value = 'test_api_key'
+            mock_client = MagicMock()
+            mock_openai.return_value = mock_client
+            mock_client.chat.completions.create.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content="这是一个简洁的摘要"))]
+            )
+
+            controller = SelfMediaController()
+            result = controller._generate_summary("这是文章内容" * 100, "测试标题")
+
+            assert result is not None
+            assert len(result) > 0
+
+    def test_generate_summary_empty_content(self):
+        """空内容返回空字符串"""
+        from workflow_controller import SelfMediaController
+
+        controller = SelfMediaController()
+        result = controller._generate_summary("", "测试标题")
+
+        assert result == ""
+
+    def test_generate_summary_api_error_fallback(self):
+        """API 错误时降级返回前 200 字"""
+        from workflow_controller import SelfMediaController
+
+        with patch('openai.OpenAI') as mock_openai, \
+             patch('workflow_controller.os.getenv') as mock_getenv:
+            mock_getenv.return_value = 'test_api_key'
+            mock_client = MagicMock()
+            mock_openai.return_value = mock_client
+            mock_client.chat.completions.create.side_effect = Exception("API Error")
+
+            content = "这是很长的内容" * 100
+            controller = SelfMediaController()
+            result = controller._generate_summary(content, "测试标题")
+
+            assert result is not None
+            assert len(result) <= 203  # 200 字 + "..."
