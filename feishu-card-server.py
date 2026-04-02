@@ -16,16 +16,20 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import uuid
 import requests
 import httpx
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 # Global cache for topic mapping (GUID -> Topic Dict)
 # This prevents ID collisions across different batches/pages
 TOPIC_MAP = {}
 
-# Feishu App Config
-APP_ID = "cli_a930dedc42789cd1"
-APP_SECRET = "WOjERqoJ8OhIwIthMS3NAcJAxFDvXK2X"
-DEFAULT_RECEIVE_ID = "ou_2da8e0f846c19c8fabebd6c6d82a8d6d"
-WORKDIR = r"C:\Users\Administrator\.openclaw\workspace-ips-maker\skills\self-media-auto"
+# Feishu App Config (from environment variables with fallback)
+APP_ID = os.getenv("FEISHU_APP_ID", "cli_a930dedc42789cd1")
+APP_SECRET = os.getenv("FEISHU_APP_SECRET", "WOjERqoJ8OhIwIthMS3NAcJAxFDvXK2X")
+DEFAULT_RECEIVE_ID = os.getenv("FEISHU_RECEIVE_ID", "ou_2da8e0f846c19c8fabebd6c6d82a8d6d")
+WORKDIR = os.getenv("FEISHU_WORKDIR", r"C:\Users\Administrator\.openclaw\workspace-ips-maker\skills\self-media-auto")
 STATE_FILE = WORKDIR + r"/.workflow_state.json"
 
 

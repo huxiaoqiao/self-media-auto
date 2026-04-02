@@ -19,11 +19,15 @@ import re
 import os
 import time
 from pathlib import Path
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 # ============ 飞书配置 ============
-APP_ID = "cli_a930dedc42789cd1"
-APP_SECRET = "WOjERqoJ8OhIwIthMS3NAcJAxFDvXK2X"
-DEFAULT_RECEIVE_ID = "ou_2da8e0f846c19c8fabebd6c6d82a8d6d"
+APP_ID = os.getenv("FEISHU_APP_ID", "cli_a930dedc42789cd1")
+APP_SECRET = os.getenv("FEISHU_APP_SECRET", "WOjERqoJ8OhIwIthMS3NAcJAxFDvXK2X")
+DEFAULT_RECEIVE_ID = os.getenv("FEISHU_RECEIVE_ID", "ou_2da8e0f846c19c8fabebd6c6d82a8d6d")
 
 # ============ API 请求 ============
 
