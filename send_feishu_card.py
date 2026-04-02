@@ -4,11 +4,11 @@
 用法：python3 send_feishu_card.py <card_type> <params...>
 
 card_type:
-  topic    - 选题卡片
-  rewrite  - 改写确认卡
-  review   - 审核卡片
-  archive  - 归档确认卡
-  final    - 最终稿卡片
+  topic_list  - 选题列表卡片
+  rewrite     - 改写确认卡
+  review      - 审核卡片
+  archive     - 归档确认卡
+  final       - 最终稿卡片
 """
 
 import sys
@@ -96,67 +96,61 @@ def send_card(token: str, receive_id: str, card: dict) -> bool:
 # ============ 卡片模板 ============
 
 def build_topic_list_card(topics: list, industry: str = "") -> dict:
-    """选题集合卡片 - 一次展示 5 个选题"""
-    industry_text = f" ({industry})" if industry else ""
-
+    """选题集合卡片 - 一次展示多个选题"""
     elements = []
-    elements.append({
-        "tag": "div",
-        "text": {
-            "tag": "lark_md",
-            "content": f"🔍 为您找到{len(topics)}个爆款选题{industry_text}，请查看并选择感兴趣的方向："
-        }
-    })
+    elements.append({"tag": "markdown", "content": f"**🔥 {industry}赛道 · 今日爆款选题 TOP {len(topics)}**"})
     elements.append({"tag": "hr"})
 
-    # 选题列表
-    for i, topic in enumerate(topics[:5], 1):
-        title = topic.get('title', '无标题')
-        author = topic.get('author', '未知')
-        score = topic.get('score', 0)
-        data = topic.get('data', '')
-        url = topic.get('id', '')
-        guid = topic.get('guid', '')
+    for i, t in enumerate(topics):
+        # 序号用 i+1（纯数字）
+        topic_num = i + 1
 
-        # 数据展示
-        data_text = f"阅读:{score}" if not data else data
+        # 提取干净的标题和 URL
+        title = str(t.get('title', '未知选题')).strip()
+        topic_url = t.get('url', '') or t.get('id', '')
+
+        # 防御性：如果标题看起来像 URL，尝试使用 data 或截断
+        if title.startswith('http'):
+            title = f"选题 {topic_num}"
+
+        # 提取 GUID
+        guid = t.get('guid', str(topic_num))
+
+        # 使用 GUID 作为按钮值，彻底解决 ID 冲突
         elements.append({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": f"**{i}. {title}**\n作者：{author} | {data_text}"
-            }
+            "tag": "markdown",
+            "content": f"**🔥 [{topic_num}] {title}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({topic_url})"
         })
+        elements.append({
+            "tag": "action",
+            "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": f"🔍 解读选题 {topic_num}"},
+                "type": "primary",
+                "value": f"insight_{guid}"
+            }]
+        })
+        if i < len(topics) - 1:
+            elements.append({"tag": "hr"})
 
+    # Bottom action buttons (with descriptions)
     elements.append({"tag": "hr"})
     elements.append({
         "tag": "action",
         "actions": [
-            {"tag": "button", "text": {"tag": "plain_text", "content": "🔍 换一批"}, "type": "default", "value": "next"}
+            {"tag": "button", "text": {"tag": "plain_text", "content": "📋 换一批（查看更多爆款选题）"}, "type": "default", "value": "next"},
+            {"tag": "button", "text": {"tag": "plain_text", "content": "⚙️ 初始化（重置 IP 名称/行业赛道）"}, "type": "default", "value": "init"}
         ]
+    })
+    elements.append({
+        "tag": "note",
+        "elements": [{"tag": "plain_text", "content": "💡 点击上方按钮选择选题，或直接发送序号 1-5 选择"}]
     })
 
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "blue", "title": {"tag": "plain_text", "content": f"🔥 {industry_text}爆款选题推荐"}},
+        "header": {"template": "purple", "title": {"tag": "plain_text", "content": f"🚀 IP 爆款选题推荐 · {industry}赛道"}},
         "elements": elements
-    }
-
-
-def build_topic_card(title: str, data_str: str, url: str, analysis: str, topic_id: str) -> dict:
-    """选题卡片"""
-    return {
-        "config": {"wide_screen_mode": True},
-        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🔥 新一期选题推送"}},
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**🔥 选题：** {title}\n\n**📊 数据：** {data_str}\n\n**🔗 原文：** {url}\n\n**💡 爆点：** {analysis}"}},
-            {"tag": "hr"},
-            {"tag": "note", "elements": [{"tag": "plain_text", "content": f"ID: {topic_id}"}]},
-            {"tag": "action", "actions": [
-                {"tag": "button", "text": {"tag": "plain_text", "content": "🔍 解读此选题"}, "type": "primary", "value": f"insight_{topic_id}"},
-                {"tag": "button", "text": {"tag": "plain_text", "content": "📋 换一批"}, "type": "default", "value": "next"}
-            ]}
-        ]
     }
 
 
@@ -200,7 +194,7 @@ def build_rewrite_card(title: str, insight: str, topic_id: str) -> dict:
     }
 
 
-def build_review_card(image_key: str, title: str, content: str, tags: str, review_id: str) -> dict:
+def build_review_card(image_key: str, title: str, content: str, tags: str, review_id: str, template: str = "blue", header_title: str = None) -> dict:
     """审核卡片"""
     CHUNK_SIZE = 800
     paragraphs = []
@@ -211,16 +205,16 @@ def build_review_card(image_key: str, title: str, content: str, tags: str, revie
 
     now_str = time.strftime('%H:%M:%S')
     elements = []
-
-    if image_key:
-        elements.append({"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": "封面图"}})
-    else:
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "（无封面图）"}})
-
-    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**🔥 标题：** {title}\n\n**🏷️ 标签：** {tags}"}})
+    elements.append({
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": f"**🔥 标题：** {title}\n\n**🏷️ 标签：** {tags}"}
+    })
     elements.extend(paragraphs)
     elements.append({"tag": "hr"})
-    elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"更新时间：{now_str}"}]})
+    elements.append({
+        "tag": "note",
+        "elements": [{"tag": "plain_text", "content": f"更新时间：{now_str}"}]
+    })
     elements.append({
         "tag": "action",
         "actions": [
@@ -230,9 +224,10 @@ def build_review_card(image_key: str, title: str, content: str, tags: str, revie
         ]
     })
 
+    hdr = header_title if header_title else "📋 内容审核"
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "📋 内容审核"}},
+        "header": {"template": template, "title": {"tag": "plain_text", "content": hdr}},
         "elements": elements
     }
 
@@ -298,7 +293,7 @@ def build_final_card(image_key: str, title: str, content: str, tags: str, review
 def main():
     if len(sys.argv) < 2:
         print("用法：python3 send_feishu_card.py <card_type> <params...>")
-        print("card_type: topic | topic_list | rewrite | review | archive | final")
+        print("card_type: topic_list | rewrite | review | archive | final")
         sys.exit(1)
 
     card_type = sys.argv[1]
@@ -320,11 +315,6 @@ def main():
         json_data = sys.argv[3] if len(sys.argv) > 3 else "[]"
         topics = json.loads(json_data)
         card = build_topic_list_card(topics, industry)
-
-    elif card_type == "topic":
-        # topic TITLE DATA URL ANALYSIS TOPIC_ID
-        title, data_str, url, analysis, topic_id = sys.argv[2:7]
-        card = build_topic_card(title, data_str, url, analysis, topic_id)
 
     elif card_type == "rewrite":
         # rewrite TITLE INSIGHT TOPIC_ID

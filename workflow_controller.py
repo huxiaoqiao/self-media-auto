@@ -296,14 +296,14 @@ class SelfMediaController:
 
         return True
 
-    def run_discovery(self, keyword=None, refresh=False, last_id=None):
+    def run_discovery(self, keyword=None, refresh=True, last_id=None):
         """
         [卡点 1 之前] 嗅探系统 (次幂数据版)
         抓取微信爆款文章的热点。
 
         翻页逻辑：
-        - 新一轮（已发布后）：不带 last_id，直接获取最新
-        - 同一轮内（发布前）：带 last_id 继续翻页
+        - 新一轮（默认）：refresh=True，不带 last_id，直接获取最新
+        - 同一轮内（换一批）：refresh=False，带 last_id 继续翻页
         """
         import requests
         logger.info("启动 run_discovery | keyword=%s, refresh=%s, last_id=%s", keyword, refresh, last_id)
@@ -319,11 +319,16 @@ class SelfMediaController:
             state['candidates'] = []
             state['last_candidates'] = []
 
-        # 同一轮内，使用缓存的 last_id 继续翻页
-        if last_id is None and not refresh:
-            last_id = state.get('cimi_last_id')
-            if last_id:
-                logger.info("使用缓存的 last_id: %s", last_id)
+        # refresh=True 表示获取最新选题，不使用缓存的 last_id
+        # refresh=False 表示使用缓存的 last_id 继续翻页
+        if not refresh:
+            if last_id is None:
+                last_id = state.get('cimi_last_id')
+                if last_id:
+                    logger.info("使用缓存的 last_id: %s", last_id)
+        else:
+            # 强制刷新，清空 last_id，获取最新选题
+            logger.info("refresh=True，获取最新选题")
 
         print("[嗅探系统] 启动 [嗅探子系统 - 次幂数据版]...")
         logger.info("[嗅探系统] 启动 [嗅探子系统  次幂数据版]...")
@@ -445,7 +450,7 @@ class SelfMediaController:
         for idx, c in enumerate(candidates, 1):
             print(f"{idx}. [{c['source']}] [{c['title']}]({c['id']})")
             logger.info("[DISCOVERY] Displaying candidate: %s", c["title"][:30])
-            print(f"👤 {c['author']} | 👁️ 阅读: {c.get('comments', 0)} | 👍 赞: {c.get('likes', 0)}")
+            print(f"👤 {c['author']} | 👁️ 阅读: {c.get('comments', 0)} | 👍 赞: {c.get('likes', 0)} | 🔥 热度：{c.get('score', 0)}")
             logger.info("[DISCOVERY] Displaying candidate: %s", c["title"][:30])
         print("===================================")
         logger.info("[DISCOVERY] Display completed")
@@ -477,9 +482,10 @@ class SelfMediaController:
             author = c.get('author', '未知')
             reads = c.get('comments', c.get('read', 0))
             likes = c.get('likes', 0)
+            score = c.get('score', c.get('hotness', 0))
             print(f"{idx}. [{source}] [{title}]({url})")
             logger.info("[DISCOVERY] Using cached last_id: %s", last_id)
-            print(f"👤 {author} | 👁️ 阅读: {reads} | 👍 赞: {likes}")
+            print(f"👤 {author} | 👁️ 阅读: {reads} | 👍 赞: {likes} | 🔥 热度：{score}")
             logger.info("[DISCOVERY] Starting from ID: %s", last_id)
         print("===================================")
         logger.info("[DISCOVERY] Fetching batch of articles")
