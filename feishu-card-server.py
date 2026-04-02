@@ -15,6 +15,7 @@ import sys
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import uuid
+import queue
 import requests
 import httpx
 from dotenv import load_dotenv
@@ -47,6 +48,78 @@ APP_SECRET = os.getenv("FEISHU_APP_SECRET", "WOjERqoJ8OhIwIthMS3NAcJAxFDvXK2X")
 DEFAULT_RECEIVE_ID = os.getenv("FEISHU_RECEIVE_ID", "ou_2da8e0f846c19c8fabebd6c6d82a8d6d")
 WORKDIR = os.getenv("FEISHU_WORKDIR", r"C:\Users\Administrator\.openclaw\workspace-ips-maker\skills\self-media-auto")
 STATE_FILE = WORKDIR + r"/.workflow_state.json"
+
+# ==================== 全局底层引擎组件 ====================
+PROCESSED_ACTIONS = {}  # 全局请求防抖去重锁
+TOKEN_CACHE = {"token": "", "expire": 0} # 飞书 Token 缓存
+MESSAGE_QUEUE = queue.Queue() # 异步消息队列引擎，实现“UI 秒回”
+
+def get_global_token():
+    """Shared token fetcher for all threads with cache."""
+    global TOKEN_CACHE
+    now = time.time()
+    if TOKEN_CACHE.get("token") and TOKEN_CACHE.get("expire", 0) > now:
+        return TOKEN_CACHE["token"]
+
+    try:
+        req = urllib.request.Request(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            data=json.dumps({"app_id": APP_ID, "app_secret": APP_SECRET}).encode('utf-8'),
+            headers={"Content-Type": "application/json"},
+            method='POST'
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            token = data.get('tenant_access_token', '')
+            if token:
+                TOKEN_CACHE["token"] = token
+                TOKEN_CACHE["expire"] = now + data.get('expire', 7200) - 120
+                logger.info(f"[AUTH] Global token updated. Expires in {data.get('expire')}s")
+                return token
+    except Exception as e:
+        logger.error(f"[ERROR] get_global_token failed: {e}")
+    return ""
+
+def message_sender_worker():
+    """Clean, independent worker thread handling async message delivery."""
+    logger.info("[QUEUE] Independent message sender worker started.")
+    while True:
+        try:
+            msg = MESSAGE_QUEUE.get()
+            token = get_global_token()
+            if not token: 
+                logger.error("[QUEUE] Sender worker: Failed to get token")
+                MESSAGE_QUEUE.task_done()
+                continue
+            
+            target_id = DEFAULT_RECEIVE_ID
+            logger.debug(f"[ASYNC_SEND] Sending {msg['type']} to {target_id}...")
+            payload = {
+                "receive_id": target_id,
+                "msg_type": "text" if msg["type"] == "text" else "interactive",
+                "content": json.dumps({"text": msg["content"]} if msg["type"] == "text" else msg["content"], ensure_ascii=False)
+            }
+            req = urllib.request.Request(
+                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
+                data=json.dumps(payload).encode('utf-8'),
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp_data = json.loads(resp.read().decode('utf-8'))
+                if resp_data.get("code") != 0:
+                    logger.error(f"[FEISHU] Message send failed: {resp_data.get('msg')}")
+                else:
+                    logger.debug(f"[ASYNC_DONE] Successfully sent {msg['type']}")
+            
+            MESSAGE_QUEUE.task_done()
+        except Exception as e:
+            logger.error(f"[QUEUE] Sender worker failed: {e}")
+            time.sleep(1)
+
+# Start background queue worker
+threading.Thread(target=message_sender_worker, daemon=True).start()
+# =========================================================
 
 
 def load_persistent_map():
@@ -182,14 +255,23 @@ class FeishuHandler(BaseHTTPRequestHandler):
         
         # 兼容两种常见格式：飞书 1.0 事件头和 2.0 嵌套结构
         action_value = data.get('action', {}).get('value')
+        event_body = data.get('event', {})
         
         if not action_value:
             # 尝试从老版 event 结构中提取
-            event_body = data.get('event', {})
             action_value = event_body.get('action', {}).get('value')
 
         if action_value:
             logger.info("[EVENT] Card action detected: action_value=%s", str(action_value)[:50])
+            
+            # 动态身份提取：识别是谁点击了按钮
+            operator_obj = data.get('operator', {})
+            open_id = operator_obj.get('open_id') or event_body.get('user', {}).get('open_id')
+            if open_id:
+                global DEFAULT_RECEIVE_ID
+                if DEFAULT_RECEIVE_ID != open_id:
+                    logger.info(f"[AUTH] Switching message target to user: {open_id}")
+                    DEFAULT_RECEIVE_ID = open_id
             # 🚀 解决 200672: 飞书卡片返回格式极其严格
             # 必须提供合规的 toast 字典，并且增加 Content-Length 防止底层网关截断
             resp_data = {
@@ -252,47 +334,12 @@ class FeishuHandler(BaseHTTPRequestHandler):
     # ===== Feishu API =====
 
     def get_token(self):
-        logger.debug("[FEISHU] Getting tenant access token")
-        req = urllib.request.Request(
-            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-            data=json.dumps({"app_id": APP_ID, "app_secret": APP_SECRET}).encode('utf-8'),
-            headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            token = json.loads(resp.read().decode('utf-8')).get('tenant_access_token', '')
-            if token:
-                logger.debug("[FEISHU] Token obtained successfully")
-            else:
-                logger.error("[FEISHU] Failed to get tenant_access_token")
-            return token
+        return get_global_token()
 
     def send_card(self, token, card):
-        logger.debug("[FEISHU] Sending interactive card")
-        try:
-            payload = {
-                "receive_id": DEFAULT_RECEIVE_ID,
-                "msg_type": "interactive",
-                "content": json.dumps(card, ensure_ascii=False)
-            }
-            req = urllib.request.Request(
-                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
-                data=json.dumps(payload).encode('utf-8'),
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-                method='POST'
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                result = json.loads(resp.read().decode('utf-8'))
-                if result.get('code') == 0:
-                    logger.info("[FEISHU] Card sent successfully")
-                    return True
-                else:
-                    logger.warning("[FEISHU] Card send failed: code=%s, msg=%s", result.get('code'), result.get('msg'))
-                    print(f"[WARN] send_card failed: {result.get('msg')}", flush=True)
-                    return False
-        except Exception as e:
-            logger.error("[FEISHU] send_card exception: %s", e, exc_info=True)
-            print(f"[ERROR] send_card failed: {e}", flush=True)
-            return False
+        logger.debug("[FEISHU] Queuing interactive card")
+        MESSAGE_QUEUE.put({"type": "card", "content": card})
+        return True
 
     def send_image_preview(self, token, image_path, caption=""):
         logger.debug("[FEISHU] Sending image preview: path=%s, caption=%s", image_path, caption[:30] if caption else "none")
@@ -367,32 +414,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
             print(f"[ERROR] send_image_preview failed: {e}")
 
     def send_text(self, token, text):
-        logger.debug("[FEISHU] Sending text message: length=%d", len(text))
-        try:
-            payload = {
-                "receive_id": DEFAULT_RECEIVE_ID,
-                "msg_type": "text",
-                "content": json.dumps({"text": text})
-            }
-            req = urllib.request.Request(
-                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
-                data=json.dumps(payload).encode('utf-8'),
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-                method='POST'
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                result = json.loads(resp.read().decode('utf-8'))
-                if result.get('code') == 0:
-                    logger.info("[FEISHU] Text message sent successfully")
-                    return True
-                else:
-                    logger.warning("[FEISHU] Text send failed: code=%s, msg=%s", result.get('code'), result.get('msg'))
-                    print(f"[WARN] send_text failed: {result.get('msg')}", flush=True)
-                    return False
-        except Exception as e:
-            logger.error("[FEISHU] send_text exception: %s", e, exc_info=True)
-            print(f"[ERROR] send_text failed: {e}", flush=True)
-            return False
+        logger.debug("[FEISHU] Queuing text message: length=%d", len(text))
+        MESSAGE_QUEUE.put({"type": "text", "content": text})
+        return True
 
     def send_source_selection_card(self, token, industry=None):
         """Send a card to let user choose hot topic source (paid vs free)."""
@@ -550,6 +574,13 @@ class FeishuHandler(BaseHTTPRequestHandler):
         """Route card button actions to appropriate handlers."""
         logger.info("[ROUTE] Card action received: action_value=%s", str(action_value)[:50])
         try:
+            # 防抖去重：10秒内相同的操作直接忽略
+            now = time.time()
+            if action_value in PROCESSED_ACTIONS and now - PROCESSED_ACTIONS.get(action_value, 0) < 10:
+                logger.info(f"[ASYNC_SKIP] Ignoring duplicate action: {action_value}")
+                return
+            PROCESSED_ACTIONS[action_value] = now
+            
             logger.debug("[ROUTE] Raw action_value: %s", repr(action_value))
             print(f"[DEBUG] handle_card_action: {repr(action_value)}", flush=True)
             token = self.get_token()
@@ -925,8 +956,35 @@ class FeishuHandler(BaseHTTPRequestHandler):
         Returns list of dicts with keys: id (URL), title, source, author, score, data (display string), analysis.
         """
         topics = []
-        # Strip ANSI color codes from entire output first
+        
+        # 🎯 优先解析结构化 JSON，这是 100% 准确的
         import re as _re
+        json_match = _re.search(r'\[DATA_JSON\]:\s*(\[.*\])', output)
+        if json_match:
+            try:
+                json_data = json.loads(json_match.group(1))
+                logger.info(f"[PARSE] Successfully parsed {len(json_data)} topics from RAW JSON")
+                for item in json_data:
+                    # 获取核心参数
+                    guid = item.get('guid', str(uuid.uuid4())[:8])
+                    item['guid'] = guid
+                    item['created_at'] = time.time()
+                    
+                    # 组装展示字符串
+                    read_str = str(item.get('comments', '0'))
+                    like_str = str(item.get('likes', '0'))
+                    heat_str = str(item.get('score', '0'))
+                    item['data'] = f"阅读: {read_str} | 赞: {like_str} | 热度: {heat_str}"
+                    
+                    with TOPIC_MAP_LOCK:
+                        TOPIC_MAP[guid] = item
+                    topics.append(item)
+                save_persistent_map()
+                return topics
+            except Exception as e:
+                logger.warning(f"[WARN] Failed to parse DATA_JSON: {e}")
+
+        # Strip ANSI color codes from entire output first
         ansi_escape = _re.compile(r'\x1b\[[0-9;]*m')
         clean_output = ansi_escape.sub('', output)
         
