@@ -772,48 +772,10 @@ class SelfMediaController:
         from datetime import datetime
         state = self.load_state()
         
-        # --- 数据对象兼容与 GUID 路由 ---
-        selected = None
-        if isinstance(topic_id_or_cmd, dict):
-            selected = topic_id_or_cmd
-        else:
-            tid = str(topic_id_or_cmd).strip('"').strip("'")
-            # 强化解析：剥离 rewrite_ 或 insight_ 等可能存在的动作前缀
-            guid_to_find = tid.split('_')[-1] if '_' in tid else tid
-            
-            # 1. 持久化路由
-            local_map = os.path.join(self.workspace, '.workflow_state.json')
-            if os.path.exists(local_map):
-                try:
-                    with open(local_map, 'r', encoding='utf-8') as f:
-                        sd = json.load(f)
-                        # 尝试多种匹配模式
-                        tm = sd.get('topic_map', {})
-                        if guid_to_find in tm:
-                            selected = tm[guid_to_find]
-                        elif tid in tm:
-                            selected = tm[tid]
-                            
-                        if selected:
-                            print(f"✅ 从持久化库解析到素材: {selected.get('title')}")
-                            logger.info("[RERPOSE] Material parsed from persistent library")
-                except Exception: pass
-            
-            # 2. 缓存路由
-            if not selected:
-                for c in state.get('candidates', []) + state.get('last_candidates', []):
-                    if str(c.get('id')) == tid or str(c.get('title')) == tid:
-                        selected = c
-                        break
-        
-        # 3. 兜底与当前上下文沿用
-        if not selected:
-            if (topic_id_or_cmd is None or str(topic_id_or_cmd).strip() == "None" or str(topic_id_or_cmd).strip() == "") and state.get('topic_context'):
-                selected = state['topic_context']
-                print(f"✅ 从当前会话上下文恢复素材: {selected.get('title')}")
-                logger.info("[REPURPOSE] Material restored from session context")
-            else:
-                selected = {"id": str(topic_id_or_cmd), "title": "自定义素材", "source": "自定义"}
+        # --- 1. 选题路由 ---
+        candidates = state.get('candidates', []) + state.get('last_candidates', [])
+        selected = self._select_topic(topic_id_or_cmd, candidates, state)
+
 
         title_val = selected.get("title", "未命名素材")
         source_val = selected.get("source", "微信")
