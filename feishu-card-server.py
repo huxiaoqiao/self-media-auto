@@ -1430,28 +1430,27 @@ class FeishuHandler(BaseHTTPRequestHandler):
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
             state = json.load(f)
 
-        approved_count = sum([
-            state.get('script_approved', False),
-            state.get('article_approved', False)
-        ])
+        # 检查是否已经触发过视觉工程（防止重复点击）
+        if state.get('script_approved') and state.get('article_approved'):
+            print("[DEBUG] Both already approved, visual already triggered", flush=True)
+            self.send_text(token, "⏳ 视觉工程已在运行中，请稍候...")
+            return
 
         state[flag_key] = True
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
 
-        new_approved_count = approved_count + 1
-        remaining = 2 - new_approved_count
-
-        if new_approved_count < 2:
-            self.send_text(token, f"✅ 【{kind}】已确认通过。\n\n还剩 1 项确认后将自动进入视觉工程阶段。")
-        else:
-            self.send_text(token, "🎉 脚本+文章均已审核完成！\n\n🎨 正在启动视觉工程：分析内容、生成封面图与文章插图...\n\n(预计 1-2 分钟，请稍候)")
+        # 检查是否两个都已完成
+        if state.get('script_approved') and state.get('article_approved'):
+            self.send_text(token, "🎉 脚本 + 文章均已审核完成！\n\n🎨 正在启动视觉工程：分析内容、生成封面图与文章插图...\n\n(预计 1-2 分钟，请稍候)")
             time.sleep(1)
             state['script_approved'] = False
             state['article_approved'] = False
             with open(STATE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
             self.run_final_and_send_card(token)
+        else:
+            self.send_text(token, f"✅ 【{kind}】已确认通过。\n\n还剩 1 项确认后将自动进入视觉工程阶段。")
 
     def run_final_and_send_card(self, token, model='seedream'):
         """Generate visuals and send final publish card."""
@@ -1598,6 +1597,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 cleanup = json.load(f)
             cleanup['is_generating_cover'] = False
+            # 重置审核标志，允许下一轮审核流程正常进行
+            cleanup['script_approved'] = False
+            cleanup['article_approved'] = False
             with open(STATE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(cleanup, f, ensure_ascii=False, indent=2)
 
@@ -1609,6 +1611,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 with open(STATE_FILE, 'r', encoding='utf-8') as f:
                     cleanup = json.load(f)
                 cleanup['is_generating_cover'] = False
+                # 重置审核标志，允许下一轮审核流程正常进行
+                cleanup['script_approved'] = False
+                cleanup['article_approved'] = False
                 with open(STATE_FILE, 'w', encoding='utf-8') as f:
                     json.dump(cleanup, f, ensure_ascii=False, indent=2)
             except:

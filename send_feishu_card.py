@@ -95,6 +95,54 @@ def send_card(token: str, receive_id: str, card: dict) -> bool:
 
 # ============ 卡片模板 ============
 
+def build_topic_list_card(topics: list, industry: str = "") -> dict:
+    """选题集合卡片 - 一次展示 5 个选题"""
+    industry_text = f" ({industry})" if industry else ""
+
+    elements = []
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": f"🔍 为您找到{len(topics)}个爆款选题{industry_text}，请查看并选择感兴趣的方向："
+        }
+    })
+    elements.append({"tag": "hr"})
+
+    # 选题列表
+    for i, topic in enumerate(topics[:5], 1):
+        title = topic.get('title', '无标题')
+        author = topic.get('author', '未知')
+        score = topic.get('score', 0)
+        data = topic.get('data', '')
+        url = topic.get('id', '')
+        guid = topic.get('guid', '')
+
+        # 数据展示
+        data_text = f"阅读:{score}" if not data else data
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**{i}. {title}**\n作者：{author} | {data_text}"
+            }
+        })
+
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "action",
+        "actions": [
+            {"tag": "button", "text": {"tag": "plain_text", "content": "🔍 换一批"}, "type": "default", "value": "next"}
+        ]
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": f"🔥 {industry_text}爆款选题推荐"}},
+        "elements": elements
+    }
+
+
 def build_topic_card(title: str, data_str: str, url: str, analysis: str, topic_id: str) -> dict:
     """选题卡片"""
     return {
@@ -250,7 +298,7 @@ def build_final_card(image_key: str, title: str, content: str, tags: str, review
 def main():
     if len(sys.argv) < 2:
         print("用法：python3 send_feishu_card.py <card_type> <params...>")
-        print("card_type: topic | rewrite | review | archive | final")
+        print("card_type: topic | topic_list | rewrite | review | archive | final")
         sys.exit(1)
 
     card_type = sys.argv[1]
@@ -266,7 +314,14 @@ def main():
     review_id = time.strftime("%m%d%H%M%S")
     receive_id = DEFAULT_RECEIVE_ID
 
-    if card_type == "topic":
+    if card_type == "topic_list":
+        # topic_list INDUSTRY JSON_DATA
+        industry = sys.argv[2] if len(sys.argv) > 2 else ""
+        json_data = sys.argv[3] if len(sys.argv) > 3 else "[]"
+        topics = json.loads(json_data)
+        card = build_topic_list_card(topics, industry)
+
+    elif card_type == "topic":
         # topic TITLE DATA URL ANALYSIS TOPIC_ID
         title, data_str, url, analysis, topic_id = sys.argv[2:7]
         card = build_topic_card(title, data_str, url, analysis, topic_id)
