@@ -776,6 +776,25 @@ class SelfMediaController:
         candidates = state.get("candidates", []) + state.get("last_candidates", [])
         selected = self._select_topic(topic_id_or_cmd, candidates, state)
 
+        title_val = selected.get("title", "未命名素材")
+        source_val = selected.get("source", "微信")
+        print(f"🚀 正在重塑内容：《{title_val}》 (源：{source_val})")
+        logger.info("[REPURPOSE] Starting content reshaping: title=%s", title_val[:30])
+
+        # --- 2. 素材提取 ---
+        raw_content = self._extract_article_content(str(selected.get("id", "")), selected)
+
+        # --- 3. 变量初始化 ---
+        api_key = os.environ.get("OPENAI_API_KEY")
+        api_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        mid = os.environ.get("LLM_MODEL_ID", "deepseek-chat")
+        ip = os.environ.get("AUTHOR_IP_NAME", "大胡")
+        wewrite_used = False
+        content_category = "insight"
+        final_content = ""
+
+        # --- 4. WeWrite 改写引擎 ---
+        if WEWRITE_XIAOHU_AVAILABLE:
             try:
                 config = WeWriteConfig()
                 if config.is_wewrite_available():
