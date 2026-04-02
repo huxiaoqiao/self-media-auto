@@ -23,23 +23,14 @@ from dotenv import load_dotenv
 import requests
 import re
 
-# ==================== 日志配置 ====================
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
-os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, f'workflow_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-LOG_FORMAT = '%(asctime)s | %(levelname)-8s | %(name)s | %(funcName)s:%(lineno)d | %(message)s'
-DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
-logger = logging.getLogger('WorkflowController')
-logger.setLevel(logging.DEBUG)
-file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
-file_handler.setLevel(logging.DEBUG)
-file_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
-logger.addHandler(file_handler)
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
-logger.addHandler(console_handler)
-print(f"[LOG] 日志文件路径：{LOG_FILE}")
+# ==================== 统一日志配置 ====================
+from utils.logger_config import get_workflow_logger, init_logging
+
+# 初始化日志系统（清理旧日志 + 创建日志目录）
+init_logging()
+
+# 获取 logger
+logger = get_workflow_logger()
 
 # 针对 Windows 环境下输出 Emoji 可能导致的 GBK 编码报错进行补丁
 if sys.stdout.encoding != 'utf-8':

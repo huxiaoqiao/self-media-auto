@@ -12,11 +12,21 @@ import time
 import threading
 import socket
 import sys
+import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import uuid
 import requests
 import httpx
 from dotenv import load_dotenv
+
+# ==================== 统一日志配置 ====================
+from utils.logger_config import get_card_server_logger, init_logging
+
+# 初始化日志系统（清理旧日志 + 创建日志目录）
+init_logging(log_prefix='card_server')
+
+# 获取 logger
+logger = get_card_server_logger()
 
 # 加载环境变量
 load_dotenv()
