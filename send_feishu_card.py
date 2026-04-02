@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-飞书交互卡片发送脚本（纯Python版）
+飞书交互卡片发送脚本（纯 Python 版）
 用法：python3 send_feishu_card.py <card_type> <params...>
 
 card_type:
@@ -15,6 +15,9 @@ import sys
 import json
 import subprocess
 import argparse
+import re
+import os
+import time
 from pathlib import Path
 
 # ============ 飞书配置 ============
@@ -35,7 +38,7 @@ def get_token():
     data = json.loads(result.stdout)
     token = data.get("tenant_access_token", "")
     if not token:
-        raise Exception(f"获取token失败: {data}")
+        raise Exception(f"获取 token 失败：{data}")
     return token
 
 
@@ -43,7 +46,7 @@ def upload_image(token: str, image_path: str) -> str:
     """上传图片并返回 image_key"""
     if not image_path or not Path(image_path).exists():
         return ""
-    
+
     result = subprocess.run([
         "curl", "-s", "-X", "POST",
         "https://open.feishu.cn/open-apis/im/v1/images",
@@ -51,13 +54,13 @@ def upload_image(token: str, image_path: str) -> str:
         "-F", "image_type=message",
         "-F", f"image=@{image_path}"
     ], capture_output=True, text=True)
-    
+
     data = json.loads(result.stdout)
     image_key = data.get("data", {}).get("image_key", "")
     if image_key:
-        print(f"  ✅ 图片上传成功: {image_key}")
+        print(f"  ✅ 图片上传成功：{image_key}")
     else:
-        print(f"  ⚠️ 图片上传失败: {data.get('msg', 'unknown error')}")
+        print(f"  ⚠️ 图片上传失败：{data.get('msg', 'unknown error')}")
     return image_key
 
 
@@ -68,7 +71,7 @@ def send_card(token: str, receive_id: str, card: dict) -> bool:
         "msg_type": "interactive",
         "content": json.dumps(card, ensure_ascii=False)
     }
-    
+
     result = subprocess.run([
         "curl", "-s", "-X", "POST",
         "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
@@ -76,13 +79,13 @@ def send_card(token: str, receive_id: str, card: dict) -> bool:
         "-H", "Content-Type: application/json",
         "-d", json.dumps(payload)
     ], capture_output=True, text=True)
-    
+
     data = json.loads(result.stdout)
     if data.get("code") == 0:
         print("  ✅ 卡片发送成功")
         return True
     else:
-        print(f"  ❌ 卡片发送失败: {data.get('msg')}")
+        print(f"  ❌ 卡片发送失败：{data.get('msg')}")
         return False
 
 
@@ -92,16 +95,15 @@ def build_topic_card(title: str, data_str: str, url: str, analysis: str, topic_i
     """选题卡片"""
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🔥 爆款选题推荐"}},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🔥 新一期选题推送"}},
         "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**📌 标题：** {title}\n\n**📊 数据：** {data_str}\n\n**🔗 原文：** {url}\n\n**💡 爆点分析：**\n{analysis}"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**🔥 选题：** {title}\n\n**📊 数据：** {data_str}\n\n**🔗 原文：** {url}\n\n**💡 爆点：** {analysis}"}},
             {"tag": "hr"},
             {"tag": "note", "elements": [{"tag": "plain_text", "content": f"ID: {topic_id}"}]},
             {"tag": "action", "actions": [
                 {"tag": "button", "text": {"tag": "plain_text", "content": "🔍 解读此选题"}, "type": "primary", "value": f"insight_{topic_id}"},
-                {"tag": "button", "text": {"tag": "plain_text", "content": "📋 换一批"}, "type": "default", "value": f"next_{topic_id}"}
-            ]},
-            {"tag": "note", "elements": [{"tag": "plain_text", "content": "💡 提示：如果按钮点击报错，请直接回复「解读+ID」来启动二创，例如：解读12"}]}
+                {"tag": "button", "text": {"tag": "plain_text", "content": "📋 换一批"}, "type": "default", "value": "next"}
+            ]}
         ]
     }
 
@@ -110,7 +112,7 @@ def build_url_preview_card(title: str, author: str, source: str, summary: str, u
     """内容预览卡 - 用户发送链接后的确认卡片"""
     type_emoji = "📝" if content_type == "article" else "🎬"
     type_label = "文章" if content_type == "article" else "视频"
-    
+
     return {
         "config": {"wide_screen_mode": True},
         "header": {"template": "purple", "title": {"tag": "plain_text", "content": f"{type_emoji} 检测到 {type_label} - 待确认"}},
@@ -133,44 +135,52 @@ def build_rewrite_card(title: str, insight: str, topic_id: str) -> dict:
     """改写确认卡"""
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "yellow", "title": {"tag": "plain_text", "content": "✍️ 选题解读完成"}},
+        "header": {"template": "purple", "title": {"tag": "plain_text", "content": "📝 选题解读完成"}},
         "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**📌 选题：** {title}\n\n**💡 解读洞察：**\n{insight}\n\n**🎯 建议：** 这个选题具有爆款潜质，建议进行 IP 化改写。"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**🔥 选题：** {title}\n\n**💡 解读：**\n{insight}"}},
             {"tag": "hr"},
             {"tag": "note", "elements": [{"tag": "plain_text", "content": f"ID: {topic_id}"}]},
             {"tag": "action", "actions": [
                 {"tag": "button", "text": {"tag": "plain_text", "content": "✍️ 开始改写"}, "type": "primary", "value": f"rewrite_{topic_id}"},
-                {"tag": "button", "text": {"tag": "plain_text", "content": "🔄 换一个"}, "type": "default", "value": f"skip_{topic_id}"}
-            ]},
-            {"tag": "note", "elements": [{"tag": "plain_text", "content": "💡 提示：如果按钮点击报错，请直接回复「开始改写+ID」来启动改写，例如：开始改写12"}]}
+                {"tag": "button", "text": {"tag": "plain_text", "content": "🔄 换一个"}, "type": "default", "value": "next_new"}
+            ]}
         ]
     }
 
 
 def build_review_card(image_key: str, title: str, content: str, tags: str, review_id: str) -> dict:
     """审核卡片"""
+    CHUNK_SIZE = 800
+    paragraphs = []
+    if content:
+        for i in range(0, len(content), CHUNK_SIZE):
+            chunk = content[i:i+CHUNK_SIZE]
+            paragraphs.append({"tag": "div", "text": {"tag": "lark_md", "content": chunk}})
+
+    now_str = time.strftime('%H:%M:%S')
     elements = []
-    
+
     if image_key:
         elements.append({"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": "封面图"}})
     else:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "（无封面图）"}})
-    
-    elements.extend([
-        {"tag": "div", "text": {"tag": "lark_md", "content": f"**📌 标题：** {title}\n\n**✨ 亮点：**\n{content}\n\n**💡 标签：** {tags}"}},
-        {"tag": "hr"},
-        {"tag": "note", "elements": [{"tag": "plain_text", "content": f"ID: {review_id}"}]},
-        {"tag": "action", "actions": [
+
+    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**🔥 标题：** {title}\n\n**🏷️ 标签：** {tags}"}})
+    elements.extend(paragraphs)
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"更新时间：{now_str}"}]})
+    elements.append({
+        "tag": "action",
+        "actions": [
             {"tag": "button", "text": {"tag": "plain_text", "content": "✅ 通过"}, "type": "primary", "value": f"approve_{review_id}"},
             {"tag": "button", "text": {"tag": "plain_text", "content": "✏️ 修改"}, "type": "default", "value": f"modify_{review_id}"},
             {"tag": "button", "text": {"tag": "plain_text", "content": "❌ 重写"}, "type": "default", "value": f"rewrite_{review_id}"}
-        ]},
-        {"tag": "note", "elements": [{"tag": "plain_text", "content": "💡 提示：如果按钮点击报错，请直接回复对应指令，例如：通过、修改、重写"}]}
-    ])
-    
+        ]
+    })
+
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "blue", "title": {"tag": "plain_text", "content": f"🎨 内容审核 - {title}"}},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "📋 内容审核"}},
         "elements": elements
     }
 
@@ -190,29 +200,43 @@ def build_archive_card(title: str, doc_url: str, topic_id: str, date: str) -> di
     }
 
 
-def build_final_card(image_key: str, title: str, content: str, tags: str, review_id: str) -> dict:
+def build_final_card(image_key: str, title: str, content: str, tags: str, review_id: str, article_image_keys=None) -> dict:
     """最终稿卡片"""
     elements = []
-    
+
     if image_key:
         elements.append({"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": "封面图"}})
     else:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "（无封面图）"}})
-    
-    elements.extend([
-        {"tag": "div", "text": {"tag": "lark_md", "content": f"**📝 完整文案：**\n\n{content}"}},
-        {"tag": "hr"},
-        {"tag": "note", "elements": [{"tag": "plain_text", "content": tags}]},
-        {"tag": "action", "actions": [
+
+    content_clean = re.sub(r'^#+\s*', '', content, flags=re.MULTILINE).strip() if content else ""
+
+    elements.append({
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": f"**🔥 标题：** {title}"}
+    })
+
+    if content_clean:
+        main_text = content_clean[:2000] + ("..." if len(content_clean) > 2000 else "")
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": main_text}})
+
+    if article_image_keys:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"🖼️ 文章包含 {len(article_image_keys)} 张专业配图，已插入相应段落"}]})
+
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": tags}]})
+    elements.append({
+        "tag": "action",
+        "actions": [
             {"tag": "button", "text": {"tag": "plain_text", "content": "📤 发布到公众号"}, "type": "primary", "value": f"post_{review_id}"},
             {"tag": "button", "text": {"tag": "plain_text", "content": "📋 复制文案"}, "type": "default", "value": f"copy_{review_id}"}
-        ]},
-        {"tag": "note", "elements": [{"tag": "plain_text", "content": "💡 提示：如果按钮点击报错，请直接回复「发布」或「复制」来执行操作"}]}
-    ])
-    
+        ]
+    })
+
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "green", "title": {"tag": "plain_text", "content": f"✅ 最终稿 - {title}"}},
+        "header": {"template": "green", "title": {"tag": "plain_text", "content": "🎉 最终稿"}},
         "elements": elements
     }
 
@@ -221,58 +245,56 @@ def build_final_card(image_key: str, title: str, content: str, tags: str, review
 
 def main():
     if len(sys.argv) < 2:
-        print("用法: python3 send_feishu_card.py <card_type> <params...>")
+        print("用法：python3 send_feishu_card.py <card_type> <params...>")
         print("card_type: topic | rewrite | review | archive | final")
         sys.exit(1)
-    
+
     card_type = sys.argv[1]
-    
-    print(f"📤 飞书卡片发送 - 类型: {card_type}")
-    
+
+    print(f"📤 飞书卡片发送 - 类型：{card_type}")
+
     # 获取 token
     print("🔑 获取访问令牌...")
     token = get_token()
     print(f"  ✅ Token: {token[:20]}...")
-    
+
     # 解析参数并构建卡片
-    import time
     review_id = time.strftime("%m%d%H%M%S")
     receive_id = DEFAULT_RECEIVE_ID
-    
+
     if card_type == "topic":
         # topic TITLE DATA URL ANALYSIS TOPIC_ID
         title, data_str, url, analysis, topic_id = sys.argv[2:7]
         card = build_topic_card(title, data_str, url, analysis, topic_id)
-        
+
     elif card_type == "rewrite":
         # rewrite TITLE INSIGHT TOPIC_ID
         title, insight, topic_id = sys.argv[2:5]
         card = build_rewrite_card(title, insight, topic_id)
-        
+
     elif card_type == "url_preview":
         # url_preview TITLE AUTHOR SOURCE CONTENT_PREVIEW URL CONTENT_TYPE [EXTRA_INFO]
         title, author, source, content_preview, url = sys.argv[2:7]
         content_type = sys.argv[7] if len(sys.argv) > 7 else "article"
         extra_info = sys.argv[8] if len(sys.argv) > 8 else ""
         card = build_url_preview_card(title, author, source, content_preview, url, content_type, extra_info)
-        
+
     elif card_type == "review":
         # review IMAGE_PATH TITLE CONTENT TAGS [COVER_KEY]
         # IMAGE_PATH: 封面图路径
-        # 可选额外参数: 经过的插图路径（用于追加发送）
+        # 可选额外参数：经过的插图路径（用于追加发送）
         image_path, title, content, tags = sys.argv[2:6]
         extra_images = sys.argv[6:]  # 额外的插图路径
-        print(f"🖼️ 处理图片: {image_path}")
+        print(f"🖼️ 处理图片：{image_path}")
         image_key = upload_image(token, image_path) if image_path else ""
         card = build_review_card(image_key, title, content, tags, review_id)
-        
+
         # 发送主卡片
-        print(f"📨 发送到: {receive_id}")
+        print(f"📨 发送到：{receive_id}")
         success = send_card(token, receive_id, card)
-        
+
         # 发送插图（作为追加消息）
         if extra_images:
-            import time
             time.sleep(0.5)  # 稍微延迟确保卡片先收到
             for idx, img_path in enumerate(extra_images):
                 if os.path.exists(img_path):
@@ -302,32 +324,32 @@ def main():
                                 if result.get('code') == 0:
                                     print(f"  ✅ 插图{idx+1} 发送成功")
                                 else:
-                                    print(f"  ⚠️ 插图{idx+1} 发送失败: {result.get('msg')}")
+                                    print(f"  ⚠️ 插图{idx+1} 发送失败：{result.get('msg')}")
                         except Exception as e:
-                            print(f"  ⚠️ 插图{idx+1} 发送异常: {e}")
+                            print(f"  ⚠️ 插图{idx+1} 发送异常：{e}")
         sys.exit(0 if success else 1)
         return  # 确保不重复执行
-        
+
     elif card_type == "archive":
         # archive TITLE DOC_URL TOPIC_ID
         title, doc_url, topic_id = sys.argv[2:5]
         date = time.strftime("%Y-%m-%d")
         card = build_archive_card(title, doc_url, topic_id, date)
-        
+
     elif card_type == "final":
         # final IMAGE_PATH TITLE CONTENT TAGS
         image_path, title, content, tags = sys.argv[2:6]
-        print(f"🖼️ 处理图片: {image_path}")
+        print(f"🖼️ 处理图片：{image_path}")
         image_key = upload_image(token, image_path) if image_path else ""
         card = build_final_card(image_key, title, content, tags, review_id)
-        
+
     else:
-        print(f"❌ 未知卡片类型: {card_type}")
-        print("支持的类型: topic | rewrite | review | archive | final")
+        print(f"❌ 未知卡片类型：{card_type}")
+        print("支持的类型：topic | rewrite | review | archive | final")
         sys.exit(1)
-    
+
     # 发送卡片
-    print(f"📨 发送到: {receive_id}")
+    print(f"📨 发送到：{receive_id}")
     success = send_card(token, receive_id, card)
     sys.exit(0 if success else 1)
 
