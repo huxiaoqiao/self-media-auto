@@ -712,55 +712,109 @@ class SelfMediaController:
         # ==========================
         # [v1.2] Xiaohu 排版引擎 (gallery 模式)
         # ==========================
-        import yaml
-        import httpx
-        # 每种内容分类对应一套专属 AI 动态渲染主题 (wechat_themes/*.yaml)
-        # 主题由大模型根据 yaml 中的 prompt 实时生成精美 HTML，突破固定主题的局限
-        theme_map = {
-            "hardcore":  "hardcore-cyber.yaml",    # 赛博硬核：暗黑科技感，荧光绿
-            "insight":   "insight-gold.yaml",      # 洞察金澜：深金奢雅，思想深度
-            "news":      "news-sharp.yaml",        # 新闻锐评：黑白高反差，红色点睛
-            "emotional": "autumn-warm.yaml",       # 秋日暖光：橙色治愈，文艺美学
-            "risk":      "risk-alert.yaml",        # 风险预警：警示红，左边框强调
-            "tool":      "tool-minimal.yaml",      # 工具极简：科技蓝，测评对比风
-            "growth":    "growth-green.yaml",      # 成长绿意：橄榄绿，积极向上
-            "crossover": "crossover-purple.yaml",  # 跨界紫境：神秘紫，思维碰撞
-        }
-        theme_file = theme_map.get(cat, "ocean-calm.yaml") if 'cat' in locals() else "ocean-calm.yaml"
-        theme_path = os.path.join(self.workspace, "wechat_themes", theme_file)
-        
         html_path = ""
-        if os.path.exists(theme_path) and api_key:
-            print(f"✨ 检测到 md2wechat-skill 引擎，根据文章分类自动选取主题：[{theme_file}]")
-            logger.info("状态更新")
+        if WEWRITE_XIAOHU_AVAILABLE:
             try:
-                with open(theme_path, 'r', encoding='utf-8') as tf:
-                    theme_cfg = yaml.safe_load(tf)
-                    html_prompt = theme_cfg.get('prompt', '')
-                
-                if html_prompt:
-                    print(f"🎨 正在调度大模型进行 HTML 渲染，这可能需要几十秒...")
-                    logger.info("状态更新")
-                    with httpx.Client(timeout=300) as cl:
-                        md_to_render = f"# {nt}\n\n{ac}" if nt else ac
-                        r = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
-                            json={"model": mid, "messages": [{"role": "system", "content": html_prompt}, {"role": "user", "content": f"内容：\n\n{md_to_render}"}], "temperature": 0.2})
-                        html_content = r.json()["choices"][0]["message"]["content"]
-                        
-                        html_content = html_content.strip()
-                        if html_content.startswith("```html"): html_content = html_content[7:]
-                        elif html_content.startswith("```"): html_content = html_content[3:]
-                        if html_content.endswith("```"): html_content = html_content[:-3]
-                        
-                        hp = os.path.join(dr_root, f"article_{ts}.html")
-                        with open(hp, "w", encoding='utf-8') as hf:
-                            hf.write(html_content.strip())
-                        html_path = hp
-                        print(f"✅ HTML 渲染完成，已生成 {hp}")
-                        logger.info("状态更新")
+                config = WeWriteConfig()
+                xiaohu_formatter = XiaohuFormatter({
+                    'default_theme': config.xiaohu_default_theme,
+                    'gallery_timeout': config.xiaohu_gallery_timeout
+                }, logger)
+
+                # 使用 Gallery 模式，弹出浏览器让用户选择主题
+                if config.xiaohu_gallery_mode:
+                    print(f"🎨 启动 Xiaohu 浏览器主题选择器...")
+                    logger.info("启动 Xiaohu Gallery 模式")
+                    hp = os.path.join(dr_root, f"article_{ts}.html")
+                    html_path = xiaohu_formatter.format_with_gallery(final_content, hp)
+                    print(f"✅ Xiaohu 排版完成：{html_path}")
+                else:
+                    # 使用默认主题直接生成
+                    print(f"✨ 使用默认主题 '{config.xiaohu_default_theme}' 进行排版...")
+                    logger.info("使用 Xiaohu 默认主题排版")
+                    hp = os.path.join(dr_root, f"article_{ts}.html")
+                    html_path = xiaohu_formatter.format_with_theme(
+                        final_content, config.xiaohu_default_theme, hp
+                    )
+                    print(f"✅ Xiaohu 排版完成：{html_path}")
+
+            except XiaohuGalleryTimeout as e:
+                print(f"⚠️ Xiaohu Gallery 超时，降级到默认主题：{e}")
+                logger.warning("Xiaohu Gallery 超时，降级到默认主题")
+                try:
+                    config = WeWriteConfig()
+                    xiaohu_formatter = XiaohuFormatter({
+                        'default_theme': config.xiaohu_default_theme,
+                        'gallery_timeout': 60
+                    }, logger)
+                    hp = os.path.join(dr_root, f"article_{ts}.html")
+                    html_path = xiaohu_formatter.format_with_theme(
+                        final_content, config.xiaohu_default_theme, hp
+                    )
+                    print(f"✅ 默认主题排版完成：{html_path}")
+                except Exception as fallback_err:
+                    print(f"❌ 默认主题排版失败：{fallback_err}")
+                    logger.error("默认主题排版失败")
+
+            except XiaohuGalleryError as e:
+                print(f"⚠️ Xiaohu 排版失败，使用旧版 md2wechat-skill: {e}")
+                logger.warning("Xiaohu 排版失败，降级到 md2wechat-skill")
             except Exception as e:
-                print(f"❌ HTML 渲染失败: {e}")
-                logger.error("状态更新")
+                print(f"⚠️ Xiaohu 异常，降级到 md2wechat-skill: {e}")
+                logger.warning("Xiaohu 异常，降级处理")
+
+        # 如果 Xiaohu 不可用或失败，降级到旧的 md2wechat-skill
+        if not html_path:
+            import yaml
+            import httpx
+            # 每种内容分类对应一套专属 AI 动态渲染主题 (wechat_themes/*.yaml)
+            theme_map = {
+                "hardcore":  "hardcore-cyber.yaml",
+                "insight":   "insight-gold.yaml",
+                "news":      "news-sharp.yaml",
+                "emotional": "autumn-warm.yaml",
+                "risk":      "risk-alert.yaml",
+                "tool":      "tool-minimal.yaml",
+                "growth":    "growth-green.yaml",
+                "crossover": "crossover-purple.yaml",
+            }
+            # 使用 content_category 变量（WeWrite 路径设置）或 cat 变量（旧路径）
+            category_value = content_category if 'content_category' in locals() else None
+            theme_file = theme_map.get(category_value, "ocean-calm.yaml")
+            theme_path = os.path.join(self.workspace, "wechat_themes", theme_file)
+
+            if os.path.exists(theme_path) and api_key:
+                print(f"✨ 检测到 md2wechat-skill 引擎，根据文章分类自动选取主题：[{theme_file}]")
+                logger.info("状态更新")
+                try:
+                    with open(theme_path, 'r', encoding='utf-8') as tf:
+                        theme_cfg = yaml.safe_load(tf)
+                        html_prompt = theme_cfg.get('prompt', '')
+
+                    if html_prompt:
+                        print(f"🎨 正在调度大模型进行 HTML 渲染，这可能需要几十秒...")
+                        logger.info("状态更新")
+                        with httpx.Client(timeout=300) as cl:
+                            md_to_render = f"# {nt}\n\n{ac}" if nt else ac
+                            r = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
+                                json={"model": mid, "messages": [{"role": "system", "content": html_prompt}, {"role": "user", "content": f"内容：\n\n{md_to_render}"}], "temperature": 0.2})
+                            html_content = r.json()["choices"][0]["message"]["content"]
+
+                            html_content = html_content.strip()
+                            if html_content.startswith("```html"): html_content = html_content[7:]
+                            elif html_content.startswith("```"): html_content = html_content[3:]
+                            if html_content.endswith("```"): html_content = html_content[:-3]
+
+                            hp = os.path.join(dr_root, f"article_{ts}.html")
+                            with open(hp, "w", encoding='utf-8') as hf:
+                                hf.write(html_content.strip())
+                            html_path = hp
+                            print(f"✅ HTML 渲染完成，已生成 {hp}")
+                            logger.info("状态更新")
+                except Exception as e:
+                    print(f"❌ HTML 渲染失败：{e}")
+                    logger.error("状态更新")
+
 
         print(f"✅ 成果存档 [保存文件]：")
         logger.info("状态更新")

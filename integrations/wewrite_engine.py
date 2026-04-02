@@ -9,6 +9,7 @@ import sys
 import logging
 import subprocess
 import tempfile
+import requests
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from pathlib import Path
@@ -107,34 +108,170 @@ class WeWriteEngine:
         """
         调用 wewrite 的改写逻辑
 
-        通过调用 wewrite 的 toolkit/cli.py 来处理内容
+        实现简化的 WeWrite 改写流程：
+        1. 读取源内容和配置
+        2. 根据 framework 选择写作框架
+        3. 调用 LLM 进行内容改写（使用 wewrite 的风格配置）
+        4. 返回改写后的内容
         """
-        # 使用 converter.py 直接处理内容
-        converter_script = self.openclaw_dir / 'toolkit' / 'converter.py'
-
-        if not converter_script.exists():
-            # 降级：直接返回原内容
-            self.logger.warning("converter.py 不存在，返回原内容")
-            with open(md_path, 'r', encoding='utf-8') as f:
-                return f.read()
+        import json
+        import requests
 
         # 读取原始内容
         with open(md_path, 'r', encoding='utf-8') as f:
             original_content = f.read()
 
-        # 对于简单的改写需求，直接返回原内容
-        # 完整的 WeWrite 流程需要通过 SKILL.md 的 Step 1-8
-        # 这里做一个简化的实现
+        # 加载 wewrite 配置文件
+        config_path = self.openclaw_dir / 'config.example.yaml'
+        style_path = self.openclaw_dir / 'style.example.yaml'
 
-        # TODO: 实现完整的 WeWrite 改写流程需要：
-        # 1. 调用 fetch_hotspots.py 获取热点
-        # 2. 调用 seo_keywords.py 分析关键词
-        # 3. 根据 framework 选择框架
-        # 4. 调用 content-enhance.md 进行内容增强
-        # 5. 最终生成改写后的内容
+        # 尝试加载用户配置（如果存在）
+        user_config_path = self.wewrite_dir / 'config.yaml'
+        user_style_path = self.wewrite_dir / 'style.yaml'
 
-        # 当前简化实现：返回原内容，实际应用时需要完整实现
-        return original_content
+        config_file = user_config_path if user_config_path.exists() else config_path
+        style_file = user_style_path if user_style_path.exists() else style_path
+
+        # 读取风格配置
+        style_config = {}
+        if style_file.exists():
+            try:
+                import yaml
+                with open(style_file, 'r', encoding='utf-8') as f:
+                    style_config = yaml.safe_load(f) or {}
+                self.logger.info(f"加载风格配置：{style_config.get('name', 'default')}")
+            except Exception as e:
+                self.logger.warning(f"加载风格配置失败：{e}，使用默认配置")
+
+        # 提取改写选项
+        ip_name = options.get('ip_name', '作者')
+        framework = options.get('framework', 'story')  # 默认使用故事框架
+        style = options.get('style', 'personal')  # 默认个人风格
+
+        # 构建改写 prompt（基于 wewrite 的写作框架）
+        system_prompt = self._build_wewrite_prompt(style_config, ip_name, framework, style)
+
+        # 调用 LLM 进行改写
+        try:
+            rewritten_content = self._call_llm_for_rewrite(
+                system_prompt, original_content, env
+            )
+            return rewritten_content
+        except Exception as e:
+            self.logger.warning(f"LLM 改写失败：{e}，返回原内容")
+            return original_content
+
+    def _build_wewrite_prompt(self, style_config: dict, ip_name: str, framework: str, style: str) -> str:
+        """
+        构建 WeWrite 风格的改写 prompt
+
+        基于 wewrite 的写作框架和风格配置
+        """
+        # 从配置中提取风格参数
+        topics = style_config.get('topics', [])
+        tone = style_config.get('tone', '真诚友好')
+        voice = style_config.get('voice', '第一人称')
+        blacklist = style_config.get('blacklist', [])
+        content_style = style_config.get('content_style', '个人感悟')
+
+        # 写作框架描述
+        framework_descs = {
+            'story': '以故事开篇，通过具体场景引入主题，中间展开分析，结尾升华',
+            'pain-point': '从用户痛点出发，描述问题场景，给出解决方案，展示效果',
+            'list': '清单体，分点论述，每个观点配案例或数据支撑',
+            'contrast': '对比结构，Before/After 对比，突出变化和价值',
+            'hotspot': '热点解读结构，描述热点事件 + 独特视角分析 + 延伸思考',
+            'opinion': '纯观点文，开门见山亮出观点，层层递进论证',
+            'review': '复盘结构，背景描述 + 过程还原 + 经验总结 + 方法论提炼',
+        }
+        framework_desc = framework_descs.get(framework, framework_descs['story'])
+
+        # 风格描述
+        style_descs = {
+            'personal': '个人化表达，使用「我」的视角，分享真实感受和经历',
+            'journalistic': '新闻纪实风格，客观描述，数据支撑，多方引用',
+            'analytical': '分析型风格，逻辑严密，层层拆解，深度思考',
+            'conversational': '对话式风格，像和朋友聊天一样自然',
+            'authoritative': '权威专家风格，专业术语，数据论证，引用研究',
+        }
+        style_desc = style_descs.get(style, style_descs['personal'])
+
+        # 构建完整的系统 prompt
+        prompt = f"""你是一位专业的微信公众号文章编辑，正在帮助作者 {ip_name} 改写一篇文章。
+
+## 作者风格配置
+- 内容领域：{', '.join(topics) if topics else '通用领域'}
+- 语调风格：{tone}
+- 表达视角：{voice}
+- 内容类型：{content_style}
+
+## 写作要求
+1. 使用{framework_desc}
+2. 采用{style_desc}
+3. 保持文章原创度，避免洗稿嫌疑
+4. 加入个人体感和真实细节
+5. 适当使用金句强化记忆点
+6. 段落长短交错，避免单调
+7. 开头 3 段内必须抓住读者注意力
+8. 结尾要有行动召唤或深度思考
+
+## 禁忌
+{f"- " + chr(10) + "- ".join(blacklist) if blacklist else "- 避免空洞说教"}
+
+## 输出格式
+直接输出改写后的完整文章（Markdown 格式），包含：
+- 一个吸引人的标题（# 标题）
+- 正文内容（使用 H2/H3 分段）
+- 适当的加粗强调（**重点句子**）
+- 如需配图位置，标注 [配图：描述]
+
+现在请改写下方的文章内容："""
+        return prompt
+
+    def _call_llm_for_rewrite(self, system_prompt: str, content: str, env: dict) -> str:
+        """
+        调用 LLM 进行内容改写
+        """
+        api_key = env.get('OPENAI_API_KEY', self.deepseek_config.get('api_key'))
+        base_url = env.get('OPENAI_BASE_URL', self.deepseek_config.get('base_url', 'https://api.deepseek.com/v1'))
+        model = self.deepseek_config.get('model', 'deepseek-chat')
+
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+
+        payload = {
+            'model': model,
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': f'原文内容：\n\n{content}'}
+            ],
+            'temperature': 0.7,
+            'max_tokens': 4000
+        }
+
+        response = requests.post(
+            f'{base_url}/chat/completions',
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+        response.raise_for_status()
+
+        result = response.json()
+        rewritten = result['choices'][0]['message']['content']
+
+        # 清理可能的 markdown 标记
+        rewritten = rewritten.strip()
+        if rewritten.startswith('```markdown'):
+            rewritten = rewritten[11:]
+        elif rewritten.startswith('```'):
+            rewritten = rewritten[3:]
+        if rewritten.endswith('```'):
+            rewritten = rewritten[:-3]
+
+        return rewritten.strip()
 
     def fetch_hotspots(self, limit: int = 20) -> list:
         """
