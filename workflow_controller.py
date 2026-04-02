@@ -1318,7 +1318,7 @@ def main():
     parser.add_argument('--keyword', type=str); parser.add_argument('--url', type=str); parser.add_argument('--id', type=str)
     parser.add_argument('--model', default='seedream'); parser.add_argument('--method', default='api')
     parser.add_argument('--script', type=str); parser.add_argument('--article', type=str)
-    parser.add_argument('--refresh', action='store_true', help="强制刷新")
+    parser.add_argument('--refresh', action='store_true', default=True, help="强制刷新（默认行为）")
     parser.add_argument('--last_id', type=str, help="游标分页用的 last_id")
     parser.add_argument('--script-only', action='store_true', help="仅重写短视频脚本")
     parser.add_argument('--article-only', action='store_true', help="仅重写深度长文")
