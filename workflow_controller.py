@@ -773,47 +773,9 @@ class SelfMediaController:
         state = self.load_state()
         
         # --- 1. 选题路由 ---
-        candidates = state.get('candidates', []) + state.get('last_candidates', [])
+        candidates = state.get("candidates", []) + state.get("last_candidates", [])
         selected = self._select_topic(topic_id_or_cmd, candidates, state)
 
-
-        title_val = selected.get("title", "未命名素材")
-        source_val = selected.get("source", "微信")
-        print(f"🚀 正在重塑内容: 《{title_val}》 (源: {source_val})")
-        logger.info("[REPURPOSE] Starting content reshaping: title=%s", title_val[:30])
-        
-        # ==========================
-        # 1. 自动化素材抓取与提取
-        # ==========================
-        raw_content = self._extract_article_content(str(selected.get("id", "")), selected)
-
-        # ==========================
-        # 2. 调用大模型：内容重塑与全网增强
-        # ==========================
-        final_content = ""
-        
-        # [联网 RAG]
-        try:
-            sys.path.insert(0, self.workspace)
-            from search_engine import get_latest_context
-            sc = get_latest_context(raw_content)
-            if sc:
-                 print(f"✅ RAG 背景已注入 (约 {len(sc)} 字)")
-                 logger.info("[REPURPOSE] RAG background injected: %d chars", len(sc))
-                 raw_content = f"【最新增强背景】:\n{sc}\n\n【原始输入素材】:\n{raw_content}"
-        except Exception: pass
-
-        # --- AI 改写 (智能分发) ---
-        # [v1.2] WeWrite 优先改写引擎 (失败时降级到 prompts_manager)
-        api_key = os.environ.get("OPENAI_API_KEY")
-        api_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        mid = os.environ.get("LLM_MODEL_ID", "deepseek-chat")
-        ip = os.environ.get("AUTHOR_IP_NAME", "大胡")
-
-        wewrite_used = False
-        content_category = "insight"  # 默认分类
-
-        if WEWRITE_XIAOHU_AVAILABLE:
             try:
                 config = WeWriteConfig()
                 if config.is_wewrite_available():
