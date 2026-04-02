@@ -779,7 +779,7 @@ class SelfMediaController:
                 "crossover": "crossover-purple.yaml",
             }
             # 使用 content_category 变量（WeWrite 路径设置）或 cat 变量（旧路径）
-            category_value = content_category if 'content_category' in locals() else None
+            category_value = content_category if 'content_category' in locals() else (cat if 'cat' in locals() else None)
             theme_file = theme_map.get(category_value, "ocean-calm.yaml")
             theme_path = os.path.join(self.workspace, "wechat_themes", theme_file)
 
@@ -834,9 +834,9 @@ class SelfMediaController:
         state['topic_context'] = selected
         if nt: state['topic_context']['title'] = nt
         # 保存文章分类，供发布时自动选择主题
-        if 'cat' in locals():
-            state['content_category'] = cat
-            print(f"[REPURPOSE] 📂 文章分类已记录: {cat}", flush=True)
+        if 'content_category' in locals():
+            state['content_category'] = content_category
+            print(f"[REPURPOSE] 📂 文章分类已记录: {content_category}", flush=True)
             logger.info("状态更新")
         self.save_state(state)
 
