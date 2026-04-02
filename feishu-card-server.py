@@ -1212,14 +1212,14 @@ class FeishuHandler(BaseHTTPRequestHandler):
             from workflow_controller import SelfMediaController
             controller = SelfMediaController()
 
-            print(f”[DEBUG] Executing repurpose using direct call (ID: {topic_id[:30]}...)”, flush=True)
+            print(f"[DEBUG] Executing repurpose using direct call (ID: {topic_id[:30]}...)", flush=True)
             process_start = time.time()
 
             # 直接调用 run_repurpose 方法，传入 topic_id
             controller.run_repurpose(str(topic_id))
 
             process_duration = time.time() - process_start
-            print(f”[DEBUG] Repurpose completed in {process_duration:.2f}s”, flush=True)
+            print(f"[DEBUG] Repurpose completed in {process_duration:.2f}s", flush=True)
 
             # 3. 载入状态，并进行文件”新鲜度”校验
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
