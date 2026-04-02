@@ -266,14 +266,33 @@ class SelfMediaController:
         """
         [卡点 1 之前] 嗅探系统 (次幂数据版)
         抓取微信爆款文章的热点。
+
+        翻页逻辑：
+        - 新一轮（已发布后）：不带 last_id，直接获取最新
+        - 同一轮内（发布前）：带 last_id 继续翻页
         """
         import requests
-        logger.info("启动 run_discovery | keyword=%s", keyword)
+        logger.info("启动 run_discovery | keyword=%s, refresh=%s, last_id=%s", keyword, refresh, last_id)
         state = self.load_state()
         saved_industry = state.get('industry')
 
+        # 判断是否是新的一轮：如果已发布过，则重置 last_id，直接获取最新
+        current_step = state.get('current_step', '')
+        if current_step in ['published_to_draft', 'published']:
+            logger.info("检测到已发布状态 (%s)，开启新一轮 discovery，清空 last_id", current_step)
+            state.pop('cimi_last_id', None)
+            state.pop('candidates_page_index', None)
+            state['candidates'] = []
+            state['last_candidates'] = []
+
+        # 同一轮内，使用缓存的 last_id 继续翻页
+        if last_id is None and not refresh:
+            last_id = state.get('cimi_last_id')
+            if last_id:
+                logger.info("使用缓存的 last_id: %s", last_id)
+
         print("[嗅探系统] 启动 [嗅探子系统 - 次幂数据版]...")
-        logger.info("状态更新")
+        logger.info("[嗅探系统] 启动 [嗅探子系统  次幂数据版]...")
         
         categories = {
             "1": ("xiaolvshu", "小绿书"), "2": ("yuer", "育儿"), "3": ("keji", "科技"), 
@@ -400,12 +419,14 @@ class SelfMediaController:
         state['current_step'] = "discovery_done"
         state['last_sync'] = datetime.now().isoformat()
         state['candidates'] = candidates
+        state['last_candidates'] = candidates  # 保存用于分页浏览
+        state['candidates_page_index'] = 1  # 重置页码
         self.save_state(state)
 
     def run_next_discovery(self):
         logger.info("启动 run_next_discovery 分页浏览")
         state = self.load_state()
-        candidates = state.get('last_candidates', [])
+        candidates = state.get('candidates', [])
         page_index = state.get('candidates_page_index', 1)
         page_size = state.get('candidates_page_size', 5)
         

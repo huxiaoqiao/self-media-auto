@@ -821,7 +821,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             "config": {"wide_screen_mode": True},
             "header": {"template": "blue", "title": {"tag": "plain_text", "content": "🔥 新一期选题推送"}},
             "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🔥 选题：** {title}\n\n**📊 数据：** {data_str}\n\n**🔗 原文：** {url}\n\n**💡 爆点：** {analysis}"}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🔥 选题：** {title}\n\n**📊 数据：** {data_str}\n\n**🔗 原文：** [{url}]({url})\n\n**💡 爆点：** {analysis}"}},
                 {"tag": "hr"},
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": f"ID: {topic_id}"}]},
                 {"tag": "action", "actions": [
