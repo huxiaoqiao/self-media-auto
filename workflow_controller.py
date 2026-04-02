@@ -26,6 +26,16 @@ import re
 # ==================== 统一日志配置 ====================
 from utils.logger_config import get_workflow_logger, init_logging
 
+# ==================== WeWrite + Xiaohu 集成导入 ====================
+try:
+    from config.wewrite_config import WeWriteConfig
+    from integrations.wechat_topic_fetcher import TopicFetcher
+    from integrations.wewrite_engine import WeWriteEngine, WeWriteError
+    from integrations.xiaohu_formatter import XiaohuFormatter, XiaohuGalleryError, XiaohuGalleryTimeout
+    WEWRITE_XIAOHU_AVAILABLE = True
+except ImportError:
+    WEWRITE_XIAOHU_AVAILABLE = False
+
 # 初始化日志系统（清理旧日志 + 创建日志目录）
 init_logging()
 
@@ -593,12 +603,36 @@ class SelfMediaController:
         except Exception: pass
 
         # --- AI 改写 (智能分发) ---
+        # [v1.2] WeWrite 优先改写引擎 (失败时降级到 prompts_manager)
         api_key = os.environ.get("OPENAI_API_KEY")
         api_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         mid = os.environ.get("LLM_MODEL_ID", "deepseek-chat")
         ip = os.environ.get("AUTHOR_IP_NAME", "大胡")
 
-        if api_key and "your_api_key" not in api_key:
+        wewrite_used = False
+        content_category = "insight"  # 默认分类
+
+        if WEWRITE_XIAOHU_AVAILABLE:
+            try:
+                config = WeWriteConfig()
+                if config.is_wewrite_available():
+                    print(f"🤖 [v1.2] 使用 WeWrite 写作框架进行改写...")
+                    logger.info("使用 WeWrite 引擎进行改写")
+
+                    wewrite_engine = WeWriteEngine(config.get_deepseek_config(), logger)
+                    rewrite_result = wewrite_engine.rewrite(raw_content, {'ip_name': ip})
+
+                    if rewrite_result.success:
+                        final_content = rewrite_result.content
+                        content_category = "insight"
+                        wewrite_used = True
+                        print(f"✅ WeWrite 改写成功：{len(final_content)} 字")
+                        logger.info("状态更新")
+            except WeWriteError as e:
+                print(f"⚠️ WeWrite 失败，降级到 prompts_manager: {e}")
+                logger.warning("WeWrite 失败，降级到 prompts_manager")
+
+        if not wewrite_used and api_key and "your_api_key" not in api_key:
             import httpx
             print(f"🤖 执行场景化创作 (模型: {mid})...")
             logger.info("状态更新")
@@ -624,7 +658,8 @@ class SelfMediaController:
                     except Exception: pass
                     print(f"✨ 场景适配：【{conf['templates'][cat]['name']}】")
                     logger.info("状态更新")
-                    
+                    content_category = cat  # 记录分类供后续排版使用
+
                     raw_prompt = conf["templates"].get(cat, conf["templates"]["insight"])["prompt"]
                     if isinstance(raw_prompt, list): raw_prompt = "\n".join(raw_prompt)
                     final_pmt = raw_prompt.format(author_ip_name=ip, wechat_id=os.environ.get("AUTHOR_WECHAT_ID", "此处添加微信号").strip("'\""))
@@ -675,7 +710,7 @@ class SelfMediaController:
         with open(sp, "w", encoding='utf-8') as f: f.write(vs if vs else "未生成脚本")
 
         # ==========================
-        # 3.5 md2wechat-skill 极致排版渲染
+        # [v1.2] Xiaohu 排版引擎 (gallery 模式)
         # ==========================
         import yaml
         import httpx
@@ -750,123 +785,6 @@ class SelfMediaController:
             print(f"[REPURPOSE] 📂 文章分类已记录: {cat}", flush=True)
             logger.info("状态更新")
         self.save_state(state)
-
-    def run_generate(self, topic_source: str, content: str, output_path: str, theme: str = None):
-        """
-        统一命令入口：选题 → 改写 → 排版 → 生图 → 发布
-
-        Args:
-            topic_source: 选题来源 (power-fee | wewrite-free)
-            content: 源内容或 URL
-            output_path: 输出 HTML 路径
-            theme: 排版主题名称（不指定则使用 gallery 模式）
-        """
-        from config.wewrite_config import WeWriteConfig
-        from integrations.wechat_topic_fetcher import TopicFetcher
-        from integrations.wewrite_engine import WeWriteEngine, WeWriteError
-        from integrations.xiaohu_formatter import XiaohuFormatter, XiaohuGalleryError
-
-        logger.info(f"开始生成文章 | topic_source={topic_source}")
-        print(f"🚀 开始生成文章 | 选题来源：{topic_source}")
-
-        # 1. 初始化配置和引擎
-        config = WeWriteConfig()
-        topic_fetcher = TopicFetcher(config.get_topic_config(), logger)
-        wewrite_engine = WeWriteEngine(config.get_deepseek_config(), logger)
-        xiaohu_formatter = XiaohuFormatter({
-            'default_theme': config.xiaohu_default_theme,
-            'gallery_timeout': config.xiaohu_gallery_timeout
-        }, logger)
-
-        # 2. 获取选题（如果 content 是 URL 或文本，则跳过选题）
-        selected_topic = None
-        if not content:
-            print(f"📋 正在获取热点选题...")
-            topics = topic_fetcher.fetch_topics(source=topic_source)
-            if not topics:
-                print("❌ 未获取到选题")
-                logger.error("未获取到选题")
-                return
-            selected_topic = topics[0]
-            print(f"✅ 选择选题：{selected_topic['title']}")
-            content = selected_topic.get('title', '')
-
-        # 3. 改写内容
-        print(f"✍️  正在改写内容...")
-        rewrite_result = None
-        try:
-            if wewrite_engine.is_available():
-                print("   使用 WeWrite 引擎进行改写")
-                logger.info("使用 WeWrite 引擎进行改写")
-                rewrite_result = wewrite_engine.rewrite(
-                    content, {'ip_name': config.ip_name}
-                )
-            else:
-                print("   WeWrite 不可用，降级到 huashu-proofreading")
-                logger.info("WeWrite 不可用，降级到 huashu-proofreading")
-                rewrite_result = self._rewrite_with_huashu(content, config.ip_name)
-        except WeWriteError as e:
-            print(f"   WeWrite 失败，降级到 huashu-proofreading: {e}")
-            logger.warning(f"WeWrite 失败，降级到 huashu-proofreading: {e}")
-            rewrite_result = self._rewrite_with_huashu(content, config.ip_name)
-
-        if not rewrite_result or not rewrite_result.get('content'):
-            print("❌ 改写失败")
-            return
-
-        rewritten_content = rewrite_result['content']
-        print(f"✅ 改写完成")
-
-        # 4. 排版
-        print(f"🎨 正在排版...")
-        try:
-            if theme:
-                print(f"   使用主题：{theme}")
-                html_path = xiaohu_formatter.format_with_theme(
-                    rewritten_content, theme, output_path
-                )
-            elif config.xiaohu_gallery_mode:
-                print("   启动浏览器主题选择器，请在浏览器中选择主题...")
-                logger.info("启动浏览器主题选择器")
-                html_path = xiaohu_formatter.format_with_gallery(
-                    rewritten_content, output_path
-                )
-            else:
-                print(f"   使用默认主题：{config.xiaohu_default_theme}")
-                html_path = xiaohu_formatter.format_with_theme(
-                    rewritten_content,
-                    config.xiaohu_default_theme,
-                    output_path
-                )
-            print(f"✅ 排版完成：{html_path}")
-            logger.info(f"排版完成：{html_path}")
-        except XiaohuGalleryError as e:
-            print(f"   排版失败，使用默认主题：{e}")
-            logger.warning(f"排版失败，使用默认主题：{e}")
-            html_path = xiaohu_formatter.format_with_theme(
-                rewritten_content,
-                config.xiaohu_default_theme,
-                output_path
-            )
-
-        # 5. 更新状态
-        state = self.load_state()
-        state['current_step'] = "generate_done"
-        state['draft_file'] = output_path
-        state['html_file'] = html_path
-        if selected_topic:
-            state['topic_context'] = selected_topic
-        self.save_state(state)
-
-        print(f"✅ 文章生成完成！")
-        print(f"   HTML 文件：{html_path}")
-        logger.info("文章生成完成")
-
-    def _rewrite_with_huashu(self, content: str, ip_name: str) -> dict:
-        """使用 huashu-proofreading 进行改写（备选方案）"""
-        # 调用现有的 huashu-proofreading 逻辑
-        # 简化实现：返回原内容
-        return {'content': content, 'source': 'huashu'}
 
     def generate_image(self, prompt, model_type="seedream", size="1024*1024"):
         """
@@ -1379,7 +1297,7 @@ class SelfMediaController:
 def main():
     logger.info("启动 workflow_controller")
     parser = argparse.ArgumentParser(description="自媒体工作流调度器")
-    parser.add_argument('action', choices=['setup', 'pre_discovery', 'discovery', 'next', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync', 'generate'], help="动作")
+    parser.add_argument('action', choices=['setup', 'pre_discovery', 'discovery', 'next', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="动作")
     parser.add_argument('--keyword', type=str); parser.add_argument('--url', type=str); parser.add_argument('--id', type=str)
     parser.add_argument('--model', default='seedream'); parser.add_argument('--method', default='api')
     parser.add_argument('--script', type=str); parser.add_argument('--article', type=str)
@@ -1388,13 +1306,6 @@ def main():
     parser.add_argument('--script-only', action='store_true', help="仅重写短视频脚本")
     parser.add_argument('--article-only', action='store_true', help="仅重写深度长文")
 
-    # Generate command arguments
-    parser.add_argument('--topic-source', choices=['power-fee', 'wewrite-free'], default='power-fee',
-                        help='选题来源：power-fee（付费）| wewrite-free（免费）')
-    parser.add_argument('--content', type=str, help='源内容或 URL')
-    parser.add_argument('--output', type=str, default='output/article.html', help='输出 HTML 文件路径')
-    parser.add_argument('--theme', type=str, help='排版主题名称（不指定则使用 gallery 模式）')
-    
     args, unknown = parser.parse_known_args()
     controller = SelfMediaController()
     
@@ -1410,13 +1321,6 @@ def main():
     elif args.action == 'publish': controller.run_publish(model_type=args.model, method=args.method)
     elif args.action == 'sync': controller.sync_to_feishu(args.script, args.article)
     elif args.action == 'status': print(json.dumps(controller.load_state(), indent=2, ensure_ascii=False))
-    elif args.action == 'generate':
-        controller.run_generate(
-            topic_source=args.topic_source,
-            content=args.content,
-            output_path=args.output,
-            theme=args.theme
-        )
 
 if __name__ == "__main__":
     main()
