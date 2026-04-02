@@ -87,11 +87,14 @@ class XiaohuFormatter:
 
             # 4. 启动进程
             self.logger.info(f"执行命令：{' '.join(cmd)}")
+            # 设置 PYTHONIOENCODING=utf-8 避免 Windows GBK 终端下 ✓ 等 Unicode 符号打印失败
+            env = {**os.environ, 'PYTHONIOENCODING': 'utf-8'}
             process = subprocess.Popen(
                 cmd,
                 cwd=str(self.xiaohu_dir),
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                env=env
             )
 
             # 5. 等待用户完成选择（轮询输出文件）
@@ -159,12 +162,15 @@ class XiaohuFormatter:
                 '--output', output_path
             ]
 
+            # 设置 PYTHONIOENCODING=utf-8 避免 Windows GBK 终端下 Unicode 符号打印失败
+            env = {**os.environ, 'PYTHONIOENCODING': 'utf-8'}
             result = subprocess.run(
                 cmd,
                 cwd=str(self.xiaohu_dir),
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=60,
+                env=env
             )
 
             if result.returncode != 0:

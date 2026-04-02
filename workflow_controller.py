@@ -1275,6 +1275,8 @@ class SelfMediaController:
         publish_file = html_path if html_path else draft_file
         if html_path:
             state['html_file'] = html_path
+            # 同步更新 draft_file，避免下次发布时仍用旧 markdown
+            state['draft_file'] = html_path
             self.save_state(state)
 
         success = self.post_to_wechat(publish_file, method=method, cover_path=state.get('cover_image'), title=state.get('topic_context', {}).get('title'))
