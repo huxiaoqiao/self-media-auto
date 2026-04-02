@@ -171,7 +171,8 @@ async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, con
     console.log(`[wechat] HTML 已保存到 SMB 共享目录`);
   }
   
-  // 存储内容供后续注入使�?  (globalThis as any).__wechatHtmlContent = content;
+  // 存储内容供后续注入使�?  
+(globalThis as any).__wechatHtmlContent = content;
   console.log('[wechat] HTML 内容已准备，长度:', content.length);
 }
 
@@ -801,7 +802,8 @@ function getImageTunnelUrl(): string | null {
   return getTunnelUrl();
 }
 
-// 启动图片 tunnel 的简单函�?async function startImageTunnelSimple(imagesDir: string): Promise<string> {
+// 启动图片 tunnel 的简单函�?
+async function startImageTunnelSimple(imagesDir: string): Promise<string> {
   // 如果 IMAGE_TUNNEL_URL 已设置，直接返回
   if (process.env.IMAGE_TUNNEL_URL) {
     console.log(`[tunnel] 使用已有�?IMAGE_TUNNEL_URL: ${process.env.IMAGE_TUNNEL_URL}`);
@@ -842,7 +844,8 @@ function getImageTunnelUrl(): string | null {
   return tunnelUrl;
 }
 
-// 在远程模式下使用 HTTP 服务�?    const useRemoteServer = !!REMOTE_CDP_URL;
+// 在远程模式下使用 HTTP 服务�?    
+const useRemoteServer = !!REMOTE_CDP_URL;
     if (useRemoteServer && contentImages.length > 0) {
       console.log('[wechat] 远程模式: 准备启动图片服务�?..');
       await startImageTunnelSimple(path.dirname(contentImages[0].localPath));

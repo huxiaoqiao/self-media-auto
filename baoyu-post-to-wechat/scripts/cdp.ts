@@ -248,17 +248,6 @@ export async function maximizeChromeWindow(cdp: CdpConnection): Promise<void> {
   }
 }
 
-  const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', {
-    targetId: pageTarget.targetId,
-    flatten: true,
-  });
-
-  await cdp.send('Page.enable', {}, { sessionId });
-  await cdp.send('Runtime.enable', {}, { sessionId });
-  await cdp.send('DOM.enable', {}, { sessionId });
-
-  return { cdp, sessionId, targetId: pageTarget.targetId };
-}
 
 export async function waitForNewTab(
   cdp: CdpConnection,
