@@ -41,3 +41,14 @@ node_modules/
 # Temporary files
 *.tmp
 *.bak
+
+# WeWrite + Xiaohu integration
+wewrite/__pycache__/
+wewrite/*.pyc
+xiaohu-wechat-format/__pycache__/
+xiaohu-wechat-format/*.pyc
+
+# Generated output
+output/
+*.input.md
+config.json

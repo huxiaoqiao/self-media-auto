@@ -1,0 +1,23 @@
+# Core dependencies
+python-dotenv>=1.0.0
+requests>=2.31.0
+markdown>=3.5
+
+# OpenAI compatible API (for DeepSeek/Qwen etc.)
+openai>=1.0.0
+
+# Image generation
+dashscope>=1.0.0
+
+# Web scraping
+firecrawl-python>=0.1.0
+
+# WeWrite dependencies
+beautifulsoup4>=4.12.0
+cssutils>=2.9.0
+pyyaml>=6.0
+Pygments>=2.15.0
+Pillow>=10.0
+
+# Xiaohu dependencies (already covered above)
+# - markdown, requests
