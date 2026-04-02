@@ -874,6 +874,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
             # Check if there's a cached page of candidates
             use_refresh = True
+            current_start_num = 1
             state = None
             try:
                 if os.path.exists(STATE_FILE):
@@ -892,6 +893,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                         start_idx = page_index * page_size
                         end_idx = start_idx + page_size
                         topics = candidates[start_idx:end_idx]
+                        current_start_num = start_idx + 1
                         logger.info("[DISCOVERY] Using cached candidates: page_index=%d, total=%d, showing %d-%d",
                                    page_index + 1, len(candidates), start_idx + 1, end_idx)
             except Exception as e:
@@ -936,9 +938,10 @@ class FeishuHandler(BaseHTTPRequestHandler):
                         
                     # 关键修复：确保强制刷新时，即使解析了15条，也只往飞书卡片中推送第一页的数量（5条）
                     topics = topics[:5]
+                    current_start_num = 1
 
                 # ALWAYS send as batch card
-                batch_card = self.build_topic_list_card(topics, "AI")
+                batch_card = self.build_topic_list_card(topics, industry or "AI", start_num=current_start_num)
                 self.send_card(token, batch_card)
             else:
                 if use_refresh:
@@ -970,11 +973,18 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     item['guid'] = guid
                     item['created_at'] = time.time()
                     
-                    # 组装展示字符串
-                    read_str = str(item.get('comments', '0'))
-                    like_str = str(item.get('likes', '0'))
-                    heat_str = str(item.get('score', '0'))
-                    item['data'] = f"阅读: {read_str} | 赞: {like_str} | 热度: {heat_str}"
+                    # 规范化所需的值保证后续卡片拼接安全
+                    item['author'] = item.get('author', '未知资源')
+                    item['likes'] = str(item.get('likes', '0'))
+                    item['comments'] = str(item.get('comments', item.get('reads', '0')))
+                    item['score'] = str(item.get('score', '0'))
+                    
+                    # 重新对齐一句话解读字段
+                    if 'analysis' not in item:
+                        item['analysis'] = item.get('topic_insight', item.get('digest', '爆款选题'))
+                        
+                    # 组装展示字符串 (Fallback 用)
+                    item['data'] = f"阅读: {item['comments']} | 赞: {item['likes']} | 热度: {item['score']}"
                     
                     with TOPIC_MAP_LOCK:
                         TOPIC_MAP[guid] = item
@@ -1071,33 +1081,52 @@ class FeishuHandler(BaseHTTPRequestHandler):
             ]
         }
 
-    def build_topic_list_card(self, topics, industry="AI"):
+    def build_topic_list_card(self, topics, industry="AI", start_num=1):
         """Build batch topic card (all topics in one card).
         topics: list of dicts with keys: id(str), title, data, url, analysis, source, author, score
         """
         elements = []
-        elements.append({"tag": "markdown", "content": f"**🔥 {industry}赛道 · 今日爆款选题 TOP {len(topics)}**"})
+        elements.append({"tag": "markdown", "content": f"**🔥 {industry}赛道 · 今日爆款选题 TOP {len(topics) * 3 if len(topics) == 5 and start_num == 1 else len(topics)}**"})
         elements.append({"tag": "hr"})
 
         for i, t in enumerate(topics):
-            # 序号用 i+1（纯数字）
-            topic_num = i + 1
+            topic_num = start_num + i
             
             # 提取干净的标题和 URL
             title = str(t.get('title', '未知选题')).strip()
             topic_url = t.get('url', '') or t.get('id', '')
             
-            # 防御性：如果标题看起来像 URL，尝试使用 data 或截断
+            # 防御性：如果标题看起来像 URL，尝试使用截断
             if title.startswith('http'):
-                title = f"选题 {topic_num}"
+                title = f"精选选题 {topic_num}"
                 
             # 提取 GUID
             guid = t.get('guid', str(topic_num))
             
+            # 提取精确的渲染数据实现第二版视觉要求
+            author = str(t.get('author', '未知'))
+            likes = str(t.get('likes', ''))
+            comments = str(t.get('comments', t.get('reads', '')))
+            heat = str(t.get('score', ''))
+            
+            # 组装富文本数据行
+            rich_parts = [f"👤 {author}"]
+            if likes and likes != "0" and likes.lower() != 'none': rich_parts.append(f"👍 {likes} 赞")
+            if comments and comments != "0" and comments.lower() != 'none': rich_parts.append(f"💬 {comments} 评论")
+            if heat and heat != "0" and heat.lower() != 'none': rich_parts.append(f"🔥 {heat} 热度")
+            
+            if len(rich_parts) >= 1:
+                metrics_str = " | ".join(rich_parts)
+            else:
+                metrics_str = " | ".join(rich_parts) if rich_parts else t.get('data', '暂无热度数据')
+                
+            # 确保一句话解读存在
+            analysis = str(t.get('analysis', t.get('digest', t.get('topic_insight', '该选题具有较大爆款潜质')))).strip()
+
             # 使用 GUID 作为按钮值，彻底解决 ID 冲突
             elements.append({
                 "tag": "markdown",
-                "content": f"**🔥 [{topic_num}] {title}**\n📊 {t.get('data', '')}\n💡 {t.get('analysis', '爆款选题')}\n🔗 [原文链接]({topic_url})"
+                "content": f"**🔥 [{topic_num}] {title}**\n📊 {metrics_str}\n💡 {analysis}\n🔗 [原文链接]({topic_url})"
             })
             elements.append({
                 "tag": "action",
