@@ -18,6 +18,7 @@ import json
 import io
 import logging
 from datetime import datetime
+from typing import Optional
 from dotenv import load_dotenv
 import requests
 import re
@@ -261,6 +262,32 @@ class SelfMediaController:
         print("✅ 飞书同步参数已准备完成")
         logger.info("状态更新")
         return result
+
+    def run_pre_discovery(self, keyword: Optional[str] = None):
+        """预发现流程：设置状态，等待用户选择选题方式。
+
+        不实际获取选题，只设置状态标记，触发卡服务器发送选择卡片。
+        """
+        logger.info("[PRE_DISCOVERY] 预发现流程启动 | keyword=%s", keyword)
+        state = self.load_state()
+
+        # 设置状态为等待选择
+        state['step'] = 'awaiting_source_selection'
+        state['source_selection_pending'] = True
+
+        # 保存行业关键词（如果有）
+        if keyword:
+            state['industry'] = keyword
+            print(f"[PRE_DISCOVERY] 行业关键词：{keyword}")
+
+        self.save_state(state)
+
+        # 输出标记，让卡服务器知道发送选择卡片
+        print("[PRE_DISCOVERY] 请发送选题方式选择卡片")
+        print("[STATE] awaiting_source_selection")
+        print("[保存文件]")  # 确保飞书校验通过
+
+        return True
 
     def run_discovery(self, keyword=None, refresh=False, last_id=None):
         """
@@ -1244,7 +1271,7 @@ class SelfMediaController:
 def main():
     logger.info("启动 workflow_controller")
     parser = argparse.ArgumentParser(description="自媒体工作流调度器")
-    parser.add_argument('action', choices=['setup', 'discovery', 'next', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="动作")
+    parser.add_argument('action', choices=['setup', 'pre_discovery', 'discovery', 'next', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="动作")
     parser.add_argument('--keyword', type=str); parser.add_argument('--url', type=str); parser.add_argument('--id', type=str)
     parser.add_argument('--model', default='seedream'); parser.add_argument('--method', default='api')
     parser.add_argument('--script', type=str); parser.add_argument('--article', type=str)
@@ -1257,6 +1284,7 @@ def main():
     controller = SelfMediaController()
     
     if args.action == 'setup': controller.run_setup()
+    elif args.action == 'pre_discovery': controller.run_pre_discovery(keyword=args.keyword)
     elif args.action == 'discovery': controller.run_discovery(keyword=args.keyword, refresh=args.refresh, last_id=args.last_id)
     elif args.action == 'next': controller.run_next_discovery()
     elif args.action == 'from-article': controller.run_from_article(args.url)

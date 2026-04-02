@@ -353,6 +353,81 @@ class FeishuHandler(BaseHTTPRequestHandler):
             print(f"[ERROR] send_text failed: {e}", flush=True)
             return False
 
+    def send_source_selection_card(self, token, industry=None):
+        """Send a card to let user choose hot topic source (paid vs free)."""
+        industry_text = f" · {industry}赛道" if industry else ""
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "blue",
+                "title": {"tag": "plain_text", "content": f"🔍 请选择选题获取方式{industry_text}"}
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**💡 两种选题获取方式，请根据您的需求和预算选择：**\n\n"
+                },
+                {
+                    "tag": "note",
+                    "elements": [
+                        {"tag": "plain_text", "content": "💰 付费 API vs 🆓 免费抓取"}
+                    ]
+                },
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "markdown",
+                    "content": f"**方式一：次幂数据 API（付费）**\n"
+                        "✅ 数据来源：微信公众号\n"
+                        "✅ 更精准的垂直领域爆文\n"
+                        "✅ 包含详细的阅读数、点赞数等指标\n"
+                        f"✅ 支持行业分类筛选{f'：{industry}' if industry else ''}\n"
+                        "⚠️ 需要有效的次幂 API 账号\n"
+                },
+                {
+                    "tag": "action",
+                    "actions": [{
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "💰 使用付费 API（推荐）"},
+                        "type": "primary",
+                        "value": f"select_source_cimipa_{industry}" if industry else "select_source_cimipa"
+                    }]
+                },
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "markdown",
+                    "content": f"**方式二：微博/头条/百度（免费）**\n"
+                        "✅ 完全免费，无需 API 账号\n"
+                        "✅ 覆盖全网热点（微博、今日头条、百度搜索）\n"
+                        "✅ 适合追踪泛热点、社会新闻\n"
+                        f"✅ 支持关键词过滤{f'：{industry}' if industry else ''}\n"
+                        "⚠️ 数据指标相对简化\n"
+                },
+                {
+                    "tag": "action",
+                    "actions": [{
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🆓 使用免费抓取"},
+                        "type": "default",
+                        "value": f"select_source_free_{industry}" if industry else "select_source_free"
+                    }]
+                },
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "note",
+                    "elements": [
+                        {"tag": "plain_text", "content": "💡 您可以随时切换选择方式，系统会记住您的选择偏好"}
+                    ]
+                }
+            ]
+        }
+        return self.send_card(token, card)
+
     def update_topic_context_by_id(self, token, topic_id):
         """Update workflow state with selected topic."""
         try:
@@ -480,6 +555,28 @@ class FeishuHandler(BaseHTTPRequestHandler):
             if action_type == 'next':
                 self.send_text(token, "🔍 正在为您检索下一批爆款选题...\n\n(预计 15-30 秒)")
                 threading.Thread(target=self.run_discovery_and_send_cards, args=(token,)).start()
+            elif action_type == 'pre_discovery':
+                # 用户触发预发现流程，发送选择卡片
+                try:
+                    with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                        state = json.load(f)
+                    industry = state.get('industry')
+                except:
+                    industry = None
+                self.send_text(token, "🔍 正在为您准备选题方式选择，请稍候...\n\n(预计 5-10 秒)")
+                threading.Thread(target=self.send_source_selection_card, args=(token, industry)).start()
+            elif action_type == 'select_source':
+                # 用户选择了热点来源方式
+                # action_value like "select_source_cimipa" or "select_source_free" or "select_source_cimipa_AI"
+                parts_extended = action_value.split('_')
+                source = 'cimipa' if 'cimipa' in parts_extended else 'free'
+                source_name = '次幂数据 API' if source == 'cimipa' else '免费热点抓取'
+                # 提取行业关键词（如果有）
+                industry = None
+                if len(parts_extended) > 3:
+                    industry = parts_extended[3]
+                self.send_text(token, f"🔍 正在使用 [{source_name}] 为您检索爆款选题...{f' (行业：{industry})' if industry else ''}\n\n(预计 15-30 秒)")
+                threading.Thread(target=self.run_discovery_and_send_cards, args=(token, source, industry)).start()
             elif action_type == 'insight':
                 topic_id = parts[1] if len(parts) > 1 else None
                 if topic_id:
@@ -670,7 +767,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             import traceback
             traceback.print_exc()
 
-    def run_discovery_and_send_cards(self, token):
+    def run_discovery_and_send_cards(self, token, source='cimipa', industry=None):
         """Run discovery and send topic cards."""
         try:
             print("[DEBUG] run_discovery_and_send_cards starting", flush=True)
@@ -696,7 +793,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
             if use_refresh:
                 last_id = state.get('cimi_last_id', '')
-                cmd = ['python', '-u', 'workflow_controller.py', 'discovery', '--refresh']
+                cmd = ['python', '-u', 'workflow_controller.py', 'discovery', '--refresh', '--source', source]
+                if industry:
+                    cmd.extend(['--keyword', industry])
                 if last_id:
                     cmd.extend(['--last_id', last_id])
                     print(f"[DEBUG] Reaching end of cache. Fetching next page from API with last_id: {last_id}", flush=True)
