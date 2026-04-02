@@ -647,7 +647,6 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 self.send_text(token, "🔍 正在为您准备选题方式选择，请稍候...\n\n(预计 5-10 秒)")
                 threading.Thread(target=self.send_source_selection_card, args=(token, industry)).start()
             elif action_type == 'select_source':
-                logger.info("[ROUTE] Action: select_source - source=%s, industry=%s", source_name, industry)
                 # 用户选择了热点来源方式
                 # action_value like "select_source_cimipa" or "select_source_free" or "select_source_cimipa_AI"
                 parts_extended = action_value.split('_')
@@ -657,11 +656,12 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 industry = None
                 if len(parts_extended) > 3:
                     industry = parts_extended[3]
+                logger.info("[ROUTE] Action: select_source - source=%s, industry=%s", source_name, industry)
                 self.send_text(token, f"🔍 正在使用 [{source_name}] 为您检索爆款选题...{f' (行业：{industry})' if industry else ''}\n\n(预计 15-30 秒)")
                 threading.Thread(target=self.run_discovery_and_send_cards, args=(token, source, industry)).start()
             elif action_type == 'insight':
-                logger.info("[ROUTE] Action: insight - topic_id=%s", topic_id[:30] if topic_id else "none")
                 topic_id = parts[1] if len(parts) > 1 else None
+                logger.info("[ROUTE] Action: insight - topic_id=%s", topic_id[:30] if topic_id else "none")
                 if topic_id:
                     self.update_topic_context_by_id(token, topic_id)
                 self.send_text(token, "🧠 正在对该选题进行深度爆点分析与 IP 切入点规划...\n\n(预计 20-40 秒)")
