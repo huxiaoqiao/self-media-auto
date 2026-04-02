@@ -843,6 +843,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
             # Check if there's a cached page of candidates
             use_refresh = True
+            state = None
             try:
                 if os.path.exists(STATE_FILE):
                     with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -850,35 +851,41 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     candidates = state.get('last_candidates', [])
                     page_index = state.get('candidates_page_index', 0)
                     page_size = state.get('candidates_page_size', 5)
+                    # 关键优化：当缓存中还有数据时，直接从缓存读取，不调用 workflow_controller
                     if candidates and page_index * page_size < len(candidates):
                         state['candidates_page_index'] = page_index + 1
                         with open(STATE_FILE, 'w', encoding='utf-8') as f:
                             json.dump(state, f, ensure_ascii=False)
                         use_refresh = False
-                        cmd = ['python', 'workflow_controller.py', 'next']
-            except:
+                        # 直接从缓存中取当前页的数据
+                        start_idx = page_index * page_size
+                        end_idx = start_idx + page_size
+                        topics = candidates[start_idx:end_idx]
+                        logger.info("[DISCOVERY] Using cached candidates: page_index=%d, total=%d, showing %d-%d",
+                                   page_index + 1, len(candidates), start_idx + 1, end_idx)
+            except Exception as e:
+                logger.warning("[DISCOVERY] Failed to check cached candidates: %s", e)
                 pass
 
             if use_refresh:
-                last_id = state.get('cimi_last_id', '')
+                # 缓存已空，需要调用 API 获取新一批数据
+                last_id = state.get('cimi_last_id', '') if state else ''
                 cmd = ['python', '-u', 'workflow_controller.py', 'discovery', '--refresh', '--source', source]
                 if industry:
                     cmd.extend(['--keyword', industry])
                 if last_id:
                     cmd.extend(['--last_id', last_id])
                     print(f"[DEBUG] Reaching end of cache. Fetching next page from API with last_id: {last_id}", flush=True)
-            else:
-                cmd = ['python', '-u', 'workflow_controller.py', 'next']
 
-            env = os.environ.copy()
-            env['PYTHONIOENCODING'] = 'utf-8'
+                env = os.environ.copy()
+                env['PYTHONIOENCODING'] = 'utf-8'
 
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=90, encoding='utf-8', errors='replace', env=env)
-            output = result.stdout
-            print(f"[DEBUG] command output length: {len(output)}", flush=True)
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=90, encoding='utf-8', errors='replace', env=env)
+                output = result.stdout
+                print(f"[DEBUG] command output length: {len(output)}", flush=True)
 
-            topics = self.parse_discovery_output(output)
-            print(f"[DEBUG] parsed topics count: {len(topics)}", flush=True)
+                topics = self.parse_discovery_output(output)
+                print(f"[DEBUG] parsed topics count: {len(topics)}", flush=True)
 
             if topics:
                 # Save candidates to state file only if it's a fresh discovery
@@ -887,6 +894,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                         with open(STATE_FILE, 'r', encoding='utf-8') as f:
                             state = json.load(f)
                         state['last_candidates'] = topics
+                        state['candidates'] = topics  # 关键修复：同时保存 candidates 字段，供 workflow_controller.py next 命令读取
                         state['candidates_page_index'] = 1
                         state['candidates_page_size'] = 5
                         with open(STATE_FILE, 'w', encoding='utf-8') as f:
@@ -902,7 +910,8 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 batch_card = self.build_topic_list_card(topics, "AI")
                 self.send_card(token, batch_card)
             else:
-                print(f"[DEBUG] No topics parsed, output preview: {output[:500]}", flush=True)
+                if use_refresh:
+                    print(f"[DEBUG] No topics parsed, output preview: {output[:500]}", flush=True)
                 self.send_text(token, "⚠️ 获取选题失败，请稍后重试或手动发'选题'获取")
         except Exception as e:
             print(f"[ERROR] run_discovery_and_send_cards failed: {e}", flush=True)
