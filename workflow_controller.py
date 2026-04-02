@@ -708,6 +708,61 @@ class SelfMediaController:
             logger.error(f"[飞书卡片] 发送异常：{e}")
             print(f"⚠️ 预览卡发送异常：{e}")
 
+    def _select_topic(self, topic_id_or_cmd, candidates, state):
+        """
+        从多种来源路由选题数据
+
+        Args:
+            topic_id_or_cmd: 传入的参数（可能是字典、ID 或命令）
+            candidates: 候选列表
+            state: 当前状态字典
+
+        Returns:
+            selected: 选中的选题字典
+        """
+        if isinstance(topic_id_or_cmd, dict):
+            logger.info("[选题路由] 直接传入字典")
+            return topic_id_or_cmd
+
+        tid = str(topic_id_or_cmd).strip('"').strip("'")
+        # 强化解析：剥离 rewrite_ 或 insight_ 等可能存在的动作前缀
+        guid_to_find = tid.split('_')[-1] if '_' in tid else tid
+
+        # 1. 持久化路由
+        local_map = os.path.join(self.workspace, '.workflow_state.json')
+        if os.path.exists(local_map):
+            try:
+                with open(local_map, 'r', encoding='utf-8') as f:
+                    sd = json.load(f)
+                    # 尝试多种匹配模式
+                    tm = sd.get('topic_map', {})
+                    if guid_to_find in tm:
+                        selected = tm[guid_to_find]
+                        logger.info(f"[选题路由] 从持久化库解析：{selected.get('title')}")
+                        return selected
+                    elif tid in tm:
+                        selected = tm[tid]
+                        logger.info(f"[选题路由] 从持久化库解析：{selected.get('title')}")
+                        return selected
+            except Exception as e:
+                logger.warning(f"[选题路由] 持久化库读取失败：{e}")
+
+        # 2. 缓存路由
+        if candidates:
+            for c in candidates:
+                if str(c.get('id')) == tid or str(c.get('title')) == tid:
+                    logger.info(f"[选题路由] 从候选列表匹配：{c.get('title')}")
+                    return c
+
+        # 3. 从上下文沿用
+        if state and state.get('topic_context'):
+            logger.info(f"[选题路由] 从会话上下文恢复：{state['topic_context'].get('title')}")
+            return state['topic_context']
+
+        # 4. 兜底
+        logger.warning(f"[选题路由] 未找到匹配，使用默认对象：{tid}")
+        return {"id": str(tid), "title": "自定义素材", "source": "自定义"}
+
     def run_repurpose(self, topic_id_or_cmd):
         """
         [IP 改写引擎 V2] 支持智能场景匹配、多源抓取保底、联网补全实时背景。

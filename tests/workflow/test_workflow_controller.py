@@ -379,3 +379,66 @@ class TestSendUrlPreviewCard:
 
             assert result is None
             mock_send.assert_called_once()
+
+
+class TestSelectTopic:
+    """选题路由方法测试"""
+
+    def test_select_topic_from_dict(self):
+        """直接传入字典"""
+        from workflow_controller import SelfMediaController
+
+        controller = SelfMediaController()
+        topic_data = {"id": "123", "title": "测试标题", "source": "微信"}
+        result = controller._select_topic(topic_data, [], None)
+
+        assert result == topic_data
+
+    @patch('workflow_controller.os.path.exists')
+    @patch('workflow_controller.json.load')
+    def test_select_topic_from_persistent_map(self, mock_json_load, mock_exists):
+        """从持久化映射中查找"""
+        from workflow_controller import SelfMediaController
+        from unittest.mock import mock_open
+
+        mock_exists.return_value = True
+        mock_json_load.return_value = {
+            'topic_map': {
+                'abc123': {"id": "abc123", "title": "持久化标题"}
+            }
+        }
+
+        # 模拟 open 读取文件
+        m = mock_open(read_data='{"topic_map": {"abc123": {"id": "abc123", "title": "持久化标题"}}}')
+        with patch('workflow_controller.open', m):
+            controller = SelfMediaController()
+            result = controller._select_topic("topic_abc123", [], None)
+
+            assert result is not None
+            assert result.get("title") == "持久化标题"
+
+    def test_select_topic_from_candidates(self):
+        """从候选列表中查找"""
+        from workflow_controller import SelfMediaController
+
+        candidates = [
+            {"id": "123", "title": "候选标题 1"},
+            {"id": "456", "title": "候选标题 2"}
+        ]
+
+        controller = SelfMediaController()
+        result = controller._select_topic("123", candidates, None)
+
+        assert result is not None
+        assert result.get("title") == "候选标题 1"
+
+    def test_select_topic_fallback_default(self):
+        """未找到时返回默认对象"""
+        from workflow_controller import SelfMediaController
+
+        controller = SelfMediaController()
+        result = controller._select_topic("不存在的 ID", [], None)
+
+        assert result is not None
+        assert result.get("id") == "不存在的 ID"
+        assert result.get("title") == "自定义素材"
