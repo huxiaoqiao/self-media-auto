@@ -567,6 +567,30 @@ class SelfMediaController:
                 return line
         return None
 
+    def _extract_author(self, content):
+        """从内容中提取作者"""
+        if not content:
+            return None
+
+        import re
+        # 使用独立模式匹配全角和半角冒号，避免字符类问题
+        match = re.search(r'作者：\s*([^\n]{2,20})', content)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r'作者:\s*([^\n]{2,20})', content)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r'author:\s*([^\n]{2,20})', content, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r'出自：\s*([^\n]{2,20})', content)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r'出自:\s*([^\n]{2,20})', content)
+        if match:
+            return match.group(1).strip()
+        return None
+
     def run_repurpose(self, topic_id_or_cmd):
         """
         [IP 改写引擎 V2] 支持智能场景匹配、多源抓取保底、联网补全实时背景。

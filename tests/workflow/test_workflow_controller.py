@@ -170,3 +170,48 @@ class TestExtractTitle:
         result = controller._extract_title("")
 
         assert result is None
+
+
+class TestExtractAuthor:
+    """作者提取方法测试"""
+
+    def test_extract_author_with_chinese_colon(self):
+        """使用中文冒号提取作者"""
+        from workflow_controller import SelfMediaController
+
+        content = "作者：张三\n\n正文内容..."
+        controller = SelfMediaController()
+        result = controller._extract_author(content)
+
+        assert result == "张三"
+
+    def test_extract_author_with_english_colon(self):
+        """使用英文冒号提取作者"""
+        from workflow_controller import SelfMediaController
+
+        # 使用英文冒号 (半角冒号 U+003A)
+        content = "author: 李四\n\n正文内容..."
+        controller = SelfMediaController()
+        result = controller._extract_author(content)
+
+        assert result == "李四"
+
+    def test_extract_author_with_source_keyword(self):
+        """使用'出自'关键词提取作者"""
+        from workflow_controller import SelfMediaController
+
+        content = "出自：王五\n\n正文内容..."
+        controller = SelfMediaController()
+        result = controller._extract_author(content)
+
+        assert result == "王五"
+
+    def test_extract_author_returns_none_for_missing(self):
+        """无作者信息时返回 None"""
+        from workflow_controller import SelfMediaController
+
+        content = "正文内容，没有作者信息"
+        controller = SelfMediaController()
+        result = controller._extract_author(content)
+
+        assert result is None
