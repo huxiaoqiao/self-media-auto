@@ -88,15 +88,20 @@ class SelfMediaController:
         import shutil
         logger.info("启动 setup 配置向导")
         print("\n" + "="*50)
+        logger.info("状态更新")
         print("🚀 欢迎使用自媒体系统引导配置 (Setup Wizard)")
+        logger.info("状态更新")
         print("="*50 + "\n")
+        logger.info("状态更新")
 
         # 1. 检查 ffmpeg
         ffmpeg_path = shutil.which("ffmpeg")
         if ffmpeg_path:
             print(f"✅ 环境检查: ffmpeg 已定位 -> {ffmpeg_path}")
+            logger.info("状态更新")
         else:
             print("⚠️ 环境警告: 未检测到 ffmpeg。视频 ASR 功能将失效，请先安装 ffmpeg 并添加到 PATH。")
+            logger.warning("状态更新")
 
         # 2. 配置 .env
         env_path = os.path.join(self.workspace, '.env')
@@ -124,6 +129,7 @@ class SelfMediaController:
         ]
 
         print("\n🔧 正在配置核心 API 密钥 (直接回车可跳过已存在的设置):")
+        logger.info("状态更新")
         final_kv = current_env.copy()
         
         # 1. 配置基础 key
@@ -146,6 +152,7 @@ class SelfMediaController:
 
         # 2. 配置生图 Key (二选一)
         print("\n🎨 [生图子系统] 建议在 阿里云 DashScope 和 火山引擎 Ark 之间选择一个主用引擎：")
+        logger.info("状态更新")
         img_provider = input("👉 请输入序号选择 (1: 阿里云 DashScope, 2: 火山引擎 Ark): ").strip()
         
         if img_provider == "1":
@@ -169,7 +176,9 @@ class SelfMediaController:
                 f.write(f"{key}={value}\n")
 
         print(f"\n✅ 配置保存成功！文件路径: {env_path}")
+        logger.info("状态更新")
         print("✨ 您现在可以运行 'python workflow_controller.py discovery' 开始使用了。")
+        logger.info("状态更新")
 
     def run_from_article(self, url_or_text):
         """
@@ -181,6 +190,7 @@ class SelfMediaController:
         url = match.group(0) if match else url_or_text
         
         print(f"🚀 启动定向创作模式 (From Article)... 原始输入中探测到的 URL: {url}")
+        logger.info("状态更新")
         state = self.load_state()
         selected = {
             "id": url, 
@@ -203,6 +213,7 @@ class SelfMediaController:
         url = match.group(0) if match else url_or_text
         
         print(f"🚀 启动定向视频创作模式 (From Video)... 原始输入中探测到的 URL: {url}")
+        logger.info("状态更新")
         state = self.load_state()
         selected = {
             "id": url, 
@@ -225,6 +236,7 @@ class SelfMediaController:
         date_folder = datetime.now().strftime('%Y-%m-%d')
         
         print("🚀 启动 [飞书文档同步]...")
+        logger.info("状态更新")
         
         # 1. 读取本地文件内容
         with open(script_path, 'r', encoding='utf-8') as f:
@@ -234,6 +246,7 @@ class SelfMediaController:
         
         # 2. 调用 OpenClaw 飞书插件创建文件夹和文档
         print(f"📁 正在飞书云空间创建文件夹「自媒体内容/{date_folder}」...")
+        logger.info("状态更新")
         
         result = {
             "action": "sync_to_feishu",
@@ -246,6 +259,7 @@ class SelfMediaController:
         }
         
         print("✅ 飞书同步参数已准备完成")
+        logger.info("状态更新")
         return result
 
     def run_discovery(self, keyword=None, refresh=False, last_id=None):
@@ -259,6 +273,7 @@ class SelfMediaController:
         saved_industry = state.get('industry')
 
         print("[嗅探系统] 启动 [嗅探子系统 - 次幂数据版]...")
+        logger.info("状态更新")
         
         categories = {
             "1": ("xiaolvshu", "小绿书"), "2": ("yuer", "育儿"), "3": ("keji", "科技"), 
@@ -295,46 +310,57 @@ class SelfMediaController:
                 state['industry'] = matched[0]
                 self.save_state(state)
                 print(f"✅ 已将您的专属行业更新为: {matched[1]}")
+                logger.info("状态更新")
             else:
                 print(f"❌ 错误: 未知分类 '{keyword}'")
+                logger.error("状态更新")
         elif saved_industry:
             matched = find_category(saved_industry)
             if matched:
                 target_category = matched
                 print(f"✨ 检测到已保存的专属行业: {matched[1]} (如需更改，请在命令后加 --keyword <新序号>)")
+                logger.info("状态更新")
 
         if not target_category:
             print("👋 请配置您的专属行业/领域(次幂爆款分类)，系统将自动保存以便日后为您自动获取爆文：")
+            logger.info("状态更新")
             items = list(categories.items())
             for i in range(0, len(items), 5):
                 chunk = items[i:i+5]
                 line = "  ".join(f"{k}. {v[1]:<6}" for k, v in chunk)
                 print(line)
+                logger.info("状态更新")
             print("⚠️ [ACTION_REQUIRED] 等待用户输入：请通过交互通道回复你想抓取的行业序号（如'3'表示科技）。")
+            logger.warning("状态更新")
             sys.exit(0)
 
         cimi_category_en, cimi_category_cn = target_category
         print(f"🔍 正在检索微信爆款文章 (分类: {cimi_category_cn})...")
+        logger.info("状态更新")
 
         cimi_app_id = os.getenv("CIMI_APP_ID")
         cimi_app_secret = os.getenv("CIMI_APP_SECRET")
         if not cimi_app_id or not cimi_app_secret:
             print("❌ 未在环境变量中找到 CIMI_APP_ID 或 CIMI_APP_SECRET，请先执行 run_setup 或修改 .env 文件。")
+            logger.error("状态更新")
             sys.exit(1)
 
         api_base = "https://api.cimidata.com"
         headers = {"Content-Type": "application/json"}
         
         print("📥 [1/2] 正在获取次幂数据 Access Token...")
+        logger.info("状态更新")
         try:
             token_resp = requests.post(f"{api_base}/api/v2/token", json={"app_id": cimi_app_id, "app_secret": cimi_app_secret}, headers=headers, timeout=10)
             token_resp.raise_for_status()
             access_token = token_resp.json()["data"]["access_token"]
         except Exception as e:
             print(f"❌ 请求 Token 接口时发生异常: {e}")
+            logger.error("状态更新")
             sys.exit(1)
 
         print("📥 [2/2] 正在拉取爆款文章列表...")
+        logger.info("状态更新")
         candidates = []
         try:
             payload = {"category": cimi_category_en, "read_num": 1000}
@@ -358,13 +384,18 @@ class SelfMediaController:
                 state['cimi_last_id'] = str(new_last_id)
         except Exception as e:
             print(f"❌ 请求获取文章接口时发生异常: {e}")
+            logger.error("状态更新")
             sys.exit(1)
 
         print(f"\n=== ✨ 今日推荐 Top {len(candidates)} 爆款选题 === (数据来源: 次幂)")
+        logger.info("状态更新")
         for idx, c in enumerate(candidates, 1):
             print(f"{idx}. [{c['source']}] [{c['title']}]({c['id']})")
+            logger.info("状态更新")
             print(f"👤 {c['author']} | 👁️ 阅读: {c.get('comments', 0)} | 👍 赞: {c.get('likes', 0)}")
+            logger.info("状态更新")
         print("===================================")
+        logger.info("状态更新")
         
         state['current_step'] = "discovery_done"
         state['last_sync'] = datetime.now().isoformat()
@@ -383,6 +414,7 @@ class SelfMediaController:
         page_items = candidates[start_idx:end_idx]
         
         print(f"\n=== ✨ 今日推荐 (第 {page_index} 页) === (数据来源: 缓存)")
+        logger.info("状态更新")
         for idx, c in enumerate(page_items, start_idx + 1):
             source = c.get('source', '微信公众号')
             title = c.get('title', '未知文章')
@@ -391,8 +423,11 @@ class SelfMediaController:
             reads = c.get('comments', c.get('read', 0))
             likes = c.get('likes', 0)
             print(f"{idx}. [{source}] [{title}]({url})")
+            logger.info("状态更新")
             print(f"👤 {author} | 👁️ 阅读: {reads} | 👍 赞: {likes}")
+            logger.info("状态更新")
         print("===================================")
+        logger.info("状态更新")
 
     def _extract_article_content(self, article_url, selected=None):
         """通用素材提取服务：支持网页解析、次幂 API 保底、抖音文案提取。"""
@@ -473,6 +508,7 @@ class SelfMediaController:
                             
                         if selected:
                             print(f"✅ 从持久化库解析到素材: {selected.get('title')}")
+                            logger.info("状态更新")
                 except Exception: pass
             
             # 2. 缓存路由
@@ -487,12 +523,14 @@ class SelfMediaController:
             if (topic_id_or_cmd is None or str(topic_id_or_cmd).strip() == "None" or str(topic_id_or_cmd).strip() == "") and state.get('topic_context'):
                 selected = state['topic_context']
                 print(f"✅ 从当前会话上下文恢复素材: {selected.get('title')}")
+                logger.info("状态更新")
             else:
                 selected = {"id": str(topic_id_or_cmd), "title": "自定义素材", "source": "自定义"}
 
         title_val = selected.get("title", "未命名素材")
         source_val = selected.get("source", "微信")
         print(f"🚀 正在重塑内容: 《{title_val}》 (源: {source_val})")
+        logger.info("状态更新")
         
         # ==========================
         # 1. 自动化素材抓取与提取
@@ -511,6 +549,7 @@ class SelfMediaController:
             sc = get_latest_context(raw_content)
             if sc:
                  print(f"✅ RAG 背景已注入 (约 {len(sc)} 字)")
+                 logger.info("状态更新")
                  raw_content = f"【最新增强背景】:\n{sc}\n\n【原始输入素材】:\n{raw_content}"
         except Exception: pass
 
@@ -523,6 +562,7 @@ class SelfMediaController:
         if api_key and "your_api_key" not in api_key:
             import httpx
             print(f"🤖 执行场景化创作 (模型: {mid})...")
+            logger.info("状态更新")
             try:
                 pm_path = os.path.join(self.workspace, "prompts_manager.json")
                 conf = {}
@@ -532,6 +572,7 @@ class SelfMediaController:
                 cat = "insight"
                 if conf:
                     print(f"🧠 [1/2] 意图路由分析...")
+                    logger.info("状态更新")
                     raw_ci = conf.get("classifier_prompt", "")
                     if isinstance(raw_ci, list): raw_ci = "\n".join(raw_ci)
                     ci = raw_ci.format(preview_content=raw_content[:1500])
@@ -543,17 +584,20 @@ class SelfMediaController:
                             if p_key in conf["templates"]: cat = p_key
                     except Exception: pass
                     print(f"✨ 场景适配：【{conf['templates'][cat]['name']}】")
+                    logger.info("状态更新")
                     
                     raw_prompt = conf["templates"].get(cat, conf["templates"]["insight"])["prompt"]
                     if isinstance(raw_prompt, list): raw_prompt = "\n".join(raw_prompt)
                     final_pmt = raw_prompt.format(author_ip_name=ip, wechat_id=os.environ.get("AUTHOR_WECHAT_ID", "此处添加微信号").strip("'\""))
                     
                     print(f"📝 [2/2] 深度创作中...")
+                    logger.info("状态更新")
                     with httpx.Client(timeout=300) as cl:
                         r = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
                             json={"model": mid, "messages": [{"role": "user", "content": f"{final_pmt}\n\n素材:\n{raw_content}"}], "temperature": 0.7})
                         final_content = r.json()["choices"][0]["message"]["content"]
                         print(f"✅ 生成完毕：{len(final_content)} 字")
+                        logger.info("状态更新")
             except Exception as e: print(f"❌ LLM 阶段故障: {e}")
 
         if not final_content:
@@ -614,6 +658,7 @@ class SelfMediaController:
         html_path = ""
         if os.path.exists(theme_path) and api_key:
             print(f"✨ 检测到 md2wechat-skill 引擎，根据文章分类自动选取主题：[{theme_file}]")
+            logger.info("状态更新")
             try:
                 with open(theme_path, 'r', encoding='utf-8') as tf:
                     theme_cfg = yaml.safe_load(tf)
@@ -621,6 +666,7 @@ class SelfMediaController:
                 
                 if html_prompt:
                     print(f"🎨 正在调度大模型进行 HTML 渲染，这可能需要几十秒...")
+                    logger.info("状态更新")
                     with httpx.Client(timeout=300) as cl:
                         md_to_render = f"# {nt}\n\n{ac}" if nt else ac
                         r = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
@@ -637,14 +683,20 @@ class SelfMediaController:
                             hf.write(html_content.strip())
                         html_path = hp
                         print(f"✅ HTML 渲染完成，已生成 {hp}")
+                        logger.info("状态更新")
             except Exception as e:
                 print(f"❌ HTML 渲染失败: {e}")
+                logger.error("状态更新")
 
         print(f"✅ 成果存档 [保存文件]：")
+        logger.info("状态更新")
         print(f"   article_path={ap}")
+        logger.info("状态更新")
         print(f"   script_path={sp}")
+        logger.info("状态更新")
         if html_path:
             print(f"   html_path={html_path}")
+            logger.info("状态更新")
         
         state['current_step'] = "waiting_for_content_review"
         state['draft_file'] = ap
@@ -657,6 +709,7 @@ class SelfMediaController:
         if 'cat' in locals():
             state['content_category'] = cat
             print(f"[REPURPOSE] 📂 文章分类已记录: {cat}", flush=True)
+            logger.info("状态更新")
         self.save_state(state)
 
     def generate_image(self, prompt, model_type="seedream", size="1024*1024"):
@@ -684,14 +737,17 @@ class SelfMediaController:
             }
             try:
                 print(f"[视觉工程] 正在通过 Ark 调用火山引擎(Seedream 4.5/2.0) 渲染 {size} 比例资产...")
+                logger.info("状态更新")
                 r = requests.post(url, headers=headers, json=data, timeout=60)
                 resp = r.json()
                 img_url = resp.get("data", [{}])[0].get("url")
                 if not img_url:
                     print(f"[ERROR] Volcengine API Response: {resp}")
+                    logger.error("状态更新")
                 return img_url
             except Exception as e:
                 print(f"[ERROR] Volcengine generation failed: {e}")
+                logger.error("状态更新")
                 return None
         else:
             api_key = os.getenv("DASHSCOPE_API_KEY")
@@ -780,6 +836,7 @@ class SelfMediaController:
             return json.loads(resp.json()["choices"][0]["message"]["content"])
         except Exception as e: 
             print(f"⚠️ 视觉分析异常: {e}")
+            logger.error("状态更新")
             return None
 
     def download_image_file(self, url, folder=None):
@@ -857,11 +914,13 @@ class SelfMediaController:
             return json.loads(resp.json()["choices"][0]["message"]["content"])
         except Exception as e: 
             print(f"⚠️ 视觉分析异常: {e}")
+            logger.error("状态更新")
             return None
 
     def post_to_wechat(self, file_path, method="browser", cover_path=None, title=None):
         import subprocess
         print(f"🚀 正在通过 [{method}] 发布文章...")
+        logger.info("状态更新")
         scripts_dir = os.path.join(self.workspace, 'baoyu-post-to-wechat', 'scripts')
         cmd = ["bun", "wechat-article.ts", "--markdown", file_path, "--theme", "default"]
         if title: cmd.extend(["--title", title])
@@ -885,21 +944,25 @@ class SelfMediaController:
         draft_file = state.get('draft_file')
         if not draft_file or not os.path.exists(draft_file): 
             print("[FEISHU_STATUS] ERR=未找到草稿文件", flush=True)
+            logger.info("状态更新")
             return False
             
         print(f"\n🎨 [视觉导演] 开启弹性生成 (引擎: {model_type})...", flush=True)
+        logger.info("状态更新")
         with open(draft_file, "r", encoding="utf-8") as f: content = f.read()
 
         # 1. 方案分析
         plan = self.analyze_visuals(content)
         if not plan:
             print("[FEISHU_STATUS] WARN=分析方案失败，使用兜底图", flush=True)
+            logger.error("状态更新")
             plan = {"cover": {"prompt": "大胡老师的数字花园"}, "illustrations": []}
 
         # 2. 生成封面 (容错机制)
         try:
             cp = plan.get("cover", {}).get("prompt", "封面图")
             print(f"🖼️ [封面] 准备构建: {cp[:30]}...", flush=True)
+            logger.info("状态更新")
             c_url = self.generate_image(cp, model_type=model_type, size="3072x1308")
             if c_url:
                 l_cover = self.download_image_file(c_url, folder=os.path.join(self.workspace, 'assets', 'covers'))
@@ -908,17 +971,22 @@ class SelfMediaController:
                     self.save_state(state)
                     # 钢铁级实时推送协议
                     print(f"[FEISHU_PREVIEW] TYPE=COVER PATH={l_cover}", flush=True)
+                    logger.info("状态更新")
                 else:
                     print("[FEISHU_STATUS] ERR=封面下载失败", flush=True)
+                    logger.error("状态更新")
             else:
                 print("[FEISHU_STATUS] WARN=封面API返回为空(风控?)", flush=True)
+                logger.warning("状态更新")
         except Exception as e:
             print(f"[FEISHU_STATUS] ERR=封面流程异常:{str(e)[:50]}", flush=True)
+            logger.error("状态更新")
 
         # 3. 生成插图 (单图闭环)
         ills = plan.get("illustrations", [])
         if ills:
             print(f"\n🎨 [排期] 共有 {len(ills)} 张插图待产...", flush=True)
+            logger.info("状态更新")
             
             ratio_map = {"16:9": "2560x1440", "4:3": "2224x1668", "1:1": "1920x1920", "3:4": "1668x2224"}
 
@@ -934,6 +1002,7 @@ class SelfMediaController:
                 size = ratio_map.get(ratio, "1920x1920")
 
                 print(f"🖼️ [进度 {i}/{len(ills)}] 启动渲染 ({ratio})...", flush=True)
+                logger.info("状态更新")
                 
                 try:
                     i_url = self.generate_image(p, model_type=model_type, size=size)
@@ -944,20 +1013,26 @@ class SelfMediaController:
                             self.save_state(state)
                             # 钢铁级实时推送协议
                             print(f"[FEISHU_PREVIEW] TYPE=ILLUS INDEX={i} PATH={l_path}", flush=True)
+                            logger.info("状态更新")
                         else:
                             print(f"[FEISHU_STATUS] ERR=插图{i}下载失败", flush=True)
+                            logger.error("状态更新")
                     else:
                         print(f"[FEISHU_STATUS] WARN=插图{i}API无产出", flush=True)
+                        logger.warning("状态更新")
                 except Exception as ie:
                     print(f"[FEISHU_STATUS] ERR=插图{i}异常:{str(ie)[:50]}", flush=True)
+                    logger.error("状态更新")
             
             self.save_state(state)
             
         print(f"\n[FEISHU_STATUS] DONE=已产出 {len(state.get('article_images', []))} 张图", flush=True)
+        logger.info("状态更新")
         return True
 
     def post_to_wechat(self, draft_file, method="api", cover_path=None, title=None):
         print("\n🚀 正在将内容同步至公众号草稿箱...", flush=True)
+        logger.info("状态更新")
         state = self.load_state()
         article_images = state.get('article_images', [])
         
@@ -978,6 +1053,7 @@ class SelfMediaController:
                         if ph1 in content or ph2 in content:
                             content = content.replace(ph1, new_img_tag).replace(ph2, new_img_tag)
                             print(f"[POST] 🖼️  插图 {i} 已精准插入占位符 IMG:{i}", flush=True)
+                            logger.info("状态更新")
                         else:
                             # 占位符不存在，留待后处理
                             unmatched_images.append((i, img_path, new_img_tag))
@@ -993,21 +1069,25 @@ class SelfMediaController:
                             for (i, _, tag), pos in sorted(zip(unmatched_images, chosen_positions), key=lambda x: x[1], reverse=True):
                                 content = content[:pos] + f"\n{tag}\n" + content[pos:]
                                 print(f"[POST] 🖼️  插图 {i} 均匀插入 section 断点", flush=True)
+                                logger.info("状态更新")
                         elif "</div>" in content:
                             pos = content.rfind("</div>")
                             tags_block = "\n".join(tag for _, _, tag in unmatched_images)
                             content = content[:pos] + f"\n{tags_block}\n" + content[pos:]
                             print(f"[POST] 🖼️  {len(unmatched_images)} 张未匹配插图追加至 </div> 前", flush=True)
+                            logger.info("状态更新")
                         else:
                             for _, _, tag in unmatched_images:
                                 content += f"\n{tag}"
                             print(f"[POST] 🖼️  {len(unmatched_images)} 张未匹配插图追加至末尾", flush=True)
+                            logger.info("状态更新")
                     
                     # ⚠️ 关键：清扫所有残余占位符（防止 AI 多写的占位符出现在公众号文章里）
                     import re as _re
                     leftover = _re.findall(r'<!--\s*IMG:\d+\s*-->', content)
                     if leftover:
                         print(f"[POST] 🧹 清除 {len(leftover)} 个残余图片占位符: {leftover}", flush=True)
+                        logger.info("状态更新")
                     content = _re.sub(r'<!--\s*IMG:\d+\s*-->', '', content)
                     # 同时清除 HTML 实体编码的占位符
                     content = _re.sub(r'&lt;!--\s*IMG:\d+\s*--&gt;', '', content)
@@ -1021,6 +1101,7 @@ class SelfMediaController:
                     cleaned = _re.sub(r'&lt;!--\s*IMG:\d+\s*--&gt;', '', cleaned)
                     if cleaned != content:
                         print(f"[POST] 🧹 无插图模式：清除残余占位符", flush=True)
+                        logger.info("状态更新")
                         with open(draft_file, 'w', encoding='utf-8') as f:
                             f.write(cleaned)
             else:
@@ -1072,12 +1153,15 @@ class SelfMediaController:
             if content_category and content_category in CATEGORY_THEME_MAP:
                 wechat_theme = CATEGORY_THEME_MAP[content_category]
                 print(f"[POST] 🎨 根据文章分类 [{content_category}] 自动选择主题: {wechat_theme}", flush=True)
+                logger.info("状态更新")
             elif env_theme:
                 wechat_theme = env_theme
                 print(f"[POST] 📋 使用 .env 手动指定主题: {wechat_theme}", flush=True)
+                logger.info("状态更新")
             else:
                 wechat_theme = "default"
                 print(f"[POST] 📋 使用默认主题: {wechat_theme}", flush=True)
+                logger.info("状态更新")
             
             script_args = [npx_cmd, "-y", "bun"]
             if method == "browser":
@@ -1090,28 +1174,35 @@ class SelfMediaController:
             if is_html:
                 script_args.extend(["--html", draft_file])
                 print(f"[POST] 📄 发布模式: HTML 直传 (跳过主题渲染)", flush=True)
+                logger.info("状态更新")
             else:
                 if method == "browser":
                     script_args.extend(["--markdown", draft_file, "--theme", wechat_theme])
                 else:
                     script_args.extend([draft_file, "--theme", wechat_theme])
                 print(f"[POST] 📄 发布模式: Markdown → 主题渲染 ({wechat_theme})", flush=True)
+                logger.info("状态更新")
                 
             if cover_path and os.path.exists(cover_path):
                 script_args.extend(["--cover", os.path.abspath(cover_path)])
                 print(f"[POST] 🖼️  封面图: {os.path.basename(cover_path)}", flush=True)
+                logger.info("状态更新")
             if title:
                 script_args.extend(["--title", title])
                 print(f"[POST] 📌 文章标题: {title}", flush=True)
+                logger.info("状态更新")
             
             print(f"[POST] 🚀 执行命令: {' '.join(script_args[:5])} ...", flush=True)
+            logger.info("状态更新")
             proc = subprocess.Popen(script_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
             for line in proc.stdout:
                 print(line, end='', flush=True)
+                logger.info("状态更新")
             proc.wait()
             return proc.returncode == 0
         except Exception as e:
             print(f"[ERROR] post_to_wechat error: {e}", flush=True)
+            logger.error("状态更新")
             return False
 
     def run_post(self, method="api"):
