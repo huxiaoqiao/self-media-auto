@@ -543,6 +543,30 @@ class SelfMediaController:
             raw_content = f"（系统保底）关于《{title}》的分析：核心是极致行动与复利思维。"
         return raw_content
 
+    def _extract_title(self, content):
+        """从内容中提取标题"""
+        if not content:
+            return None
+
+        import re
+        lines = content.strip().split('\n')
+        # 时间戳正则：0:00, 0:00- , [0:00], （0:00），# 0:00 等
+        timestamp_pattern = re.compile(r'^(\d{1,2}:\d{2}(?::\d{2})?[\s\--\.]*)|^#\s*\d{1,2}:\d{2}|^[\[【（(].*\d{1,2}:\d{2}')
+        for line in lines[:10]:
+            line = line.strip()
+            if not line:
+                continue
+            # 跳过时间戳行
+            if timestamp_pattern.match(line):
+                continue
+            if len(line) < 5 or len(line) > 120:
+                continue
+            # 去掉常见前缀
+            line = re.sub(r'^(#{1,6}\s+|【[^】]+】|\[[^\]]+\]|#+\s*|●\s*|-\s*)', '', line)
+            if line and len(line) >= 5:
+                return line
+        return None
+
     def run_repurpose(self, topic_id_or_cmd):
         """
         [IP 改写引擎 V2] 支持智能场景匹配、多源抓取保底、联网补全实时背景。

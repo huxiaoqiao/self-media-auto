@@ -127,3 +127,46 @@ class TestWorkflowState:
         # 验证控制器可以管理状态
         # （具体状态管理逻辑取决于实际实现）
         assert controller is not None
+
+
+class TestExtractTitle:
+    """标题提取方法测试"""
+
+    def test_extract_title_from_video_content(self):
+        """从视频转录内容中提取标题"""
+        from workflow_controller import SelfMediaController
+
+        content = """0:00
+大家好，今天我们来聊聊 AI 自媒体的未来
+
+0:15
+首先，我们来看看当前的市场趋势
+"""
+        controller = SelfMediaController()
+        result = controller._extract_title(content)
+
+        assert result is not None
+        assert len(result) >= 5
+        assert "AI" in result or "自媒体" in result
+
+    def test_extract_title_with_timestamp_prefix(self):
+        """跳过时间戳前缀提取标题"""
+        from workflow_controller import SelfMediaController
+
+        content = """[0:00] 开场白
+这是真正的标题行
+0:02 正文内容开始
+"""
+        controller = SelfMediaController()
+        result = controller._extract_title(content)
+
+        assert result == "这是真正的标题行"
+
+    def test_extract_title_returns_none_for_empty(self):
+        """空内容返回 None"""
+        from workflow_controller import SelfMediaController
+
+        controller = SelfMediaController()
+        result = controller._extract_title("")
+
+        assert result is None
