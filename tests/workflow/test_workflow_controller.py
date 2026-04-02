@@ -320,3 +320,62 @@ class TestGenerateSummary:
 
             assert result is not None
             assert len(result) <= 203  # 200 字 + "..."
+
+
+class TestSendUrlPreviewCard:
+    """飞书卡片发送方法测试"""
+
+    def test_send_url_preview_card_success(self):
+        """成功发送预览卡片"""
+        from workflow_controller import SelfMediaController
+
+        with patch('workflow_controller.build_url_preview_card') as mock_build, \
+             patch('workflow_controller.get_token') as mock_get_token, \
+             patch('workflow_controller.send_card') as mock_send, \
+             patch('workflow_controller.os.getenv') as mock_getenv:
+            mock_build.return_value = {"config": {"wide_screen_mode": True}}
+            mock_get_token.return_value = "test_token"
+            mock_getenv.return_value = "test_receive_id"
+            mock_send.return_value = True
+
+            controller = SelfMediaController()
+            result = controller._send_url_preview_card(
+                title="测试标题",
+                author="测试作者",
+                source="微信公众号",
+                summary="测试摘要",
+                url="https://example.com",
+                content_type="article",
+                extra_info={"key": "value"}
+            )
+
+            assert result is None  # 方法无返回值，只打印日志
+            mock_build.assert_called_once()
+            mock_send.assert_called_once()
+
+    def test_send_url_preview_card_failure(self):
+        """发送失败时打印警告"""
+        from workflow_controller import SelfMediaController
+
+        with patch('workflow_controller.build_url_preview_card') as mock_build, \
+             patch('workflow_controller.get_token') as mock_get_token, \
+             patch('workflow_controller.send_card') as mock_send, \
+             patch('workflow_controller.os.getenv') as mock_getenv:
+            mock_build.return_value = {"config": {"wide_screen_mode": True}}
+            mock_get_token.return_value = "test_token"
+            mock_getenv.return_value = "test_receive_id"
+            mock_send.return_value = False
+
+            controller = SelfMediaController()
+            result = controller._send_url_preview_card(
+                title="测试标题",
+                author="测试作者",
+                source="微信公众号",
+                summary="测试摘要",
+                url="https://example.com",
+                content_type="article",
+                extra_info={}
+            )
+
+            assert result is None
+            mock_send.assert_called_once()

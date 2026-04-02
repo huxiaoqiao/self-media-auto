@@ -36,6 +36,14 @@ try:
 except ImportError:
     WEWRITE_XIAOHU_AVAILABLE = False
 
+# ==================== 飞书卡片导入 ====================
+try:
+    from send_feishu_card import build_url_preview_card, send_card, get_token
+except ImportError:
+    build_url_preview_card = None
+    send_card = None
+    get_token = None
+
 # 初始化日志系统（清理旧日志 + 创建日志目录）
 init_logging()
 
@@ -666,6 +674,39 @@ class SelfMediaController:
             logger.warning(f"[摘要生成] AI 生成失败：{e}，降级到前 200 字")
             # 降级方案：返回前 200 字
             return truncated[:200] + "..."
+
+    def _send_url_preview_card(self, title, author, source, summary, url, content_type, extra_info):
+        """发送内容预览卡"""
+        logger.info(f"[飞书卡片] 准备发送预览卡：{title}")
+
+        try:
+            # 使用模块级别的导入
+            if build_url_preview_card is None or send_card is None or get_token is None:
+                raise ImportError("飞书卡片模块未导入")
+
+            # 构建卡片内容
+            card = build_url_preview_card(title, author, source, summary, url, content_type, extra_info)
+
+            # 获取 token 并发送
+            token = get_token()
+            receive_id = os.getenv("FEISHU_RECEIVE_ID", "")
+            if token and receive_id:
+                success = send_card(token, receive_id, card)
+                if success:
+                    logger.info("[飞书卡片] 预览卡发送成功")
+                    print("✅ 预览卡发送成功")
+                else:
+                    logger.warning("[飞书卡片] 预览卡发送失败")
+                    print("⚠️ 预览卡发送失败")
+            else:
+                logger.warning("[飞书卡片] 缺少 FEISHU_RECEIVE_ID 或 token")
+                print("⚠️ 预览卡发送失败：缺少配置")
+        except ImportError as e:
+            logger.error(f"[飞书卡片] 模块导入失败：{e}")
+            print(f"⚠️ 预览卡发送失败：{e}")
+        except Exception as e:
+            logger.error(f"[飞书卡片] 发送异常：{e}")
+            print(f"⚠️ 预览卡发送异常：{e}")
 
     def run_repurpose(self, topic_id_or_cmd):
         """
