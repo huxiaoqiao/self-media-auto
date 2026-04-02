@@ -1,6 +1,9 @@
 # Claude local settings
 .claude/
 
+# Git worktrees
+.worktrees/
+
 # Drafts and personal data
 drafts/
 assets/
