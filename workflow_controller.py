@@ -823,7 +823,28 @@ class SelfMediaController:
                 conf = {}
                 if os.path.exists(pm_path):
                     with open(pm_path, 'r', encoding='utf-8') as f: conf = json.load(f)
-                
+                else:
+                    # prompts_manager.json 不存在时使用内置默认 prompt
+                    logger.info("[REPURPOSE] prompts_manager.json 不存在，使用默认 prompt")
+                    conf = {
+                        "classifier_prompt": "分析以下内容的核心意图，从以下类别中选择一个最匹配的：insight(观点洞察), story(故事叙述), tutorial(教程指南), news(新闻资讯)。只返回类别名称。\n\n预览内容：{preview_content}",
+                        "templates": {
+                            "insight": {
+                                "prompt": """你现在的身份是自媒体领域的顶级极客大 IP。
+任务：对提供的素材进行口语化、节奏明快的改写。
+要求：
+- 忠实原文核心事实
+- 开篇直接抛出核心观点
+- 使用###小标题分隔段落
+- 每 500 字插入金句（加黑加粗并使用>引用块）
+- 结尾加上行动号召和微信号
+
+作者 IP 名称：{author_ip_name}
+微信号：{wechat_id}"""
+                            }
+                        }
+                    }
+
                 cat = "insight"
                 if conf:
                     print(f"🧠 [1/2] 意图路由分析...")
