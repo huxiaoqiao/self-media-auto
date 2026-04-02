@@ -90,20 +90,18 @@ class SelfMediaController:
         import shutil
         logger.info("启动 setup 配置向导")
         print("\n" + "="*50)
-        logger.info("状态更新")
+        logger.info("[SETUP] Displaying welcome message")
         print("🚀 欢迎使用自媒体系统引导配置 (Setup Wizard)")
-        logger.info("状态更新")
         print("="*50 + "\n")
-        logger.info("状态更新")
+        logger.info("[SETUP] Displaying welcome message")
 
         # 1. 检查 ffmpeg
         ffmpeg_path = shutil.which("ffmpeg")
         if ffmpeg_path:
             print(f"✅ 环境检查: ffmpeg 已定位 -> {ffmpeg_path}")
-            logger.info("状态更新")
         else:
             print("⚠️ 环境警告: 未检测到 ffmpeg。视频 ASR 功能将失效，请先安装 ffmpeg 并添加到 PATH。")
-            logger.warning("状态更新")
+            logger.warning("[SETUP] FFmpeg not found in PATH")
 
         # 2. 配置 .env
         env_path = os.path.join(self.workspace, '.env')
@@ -131,7 +129,7 @@ class SelfMediaController:
         ]
 
         print("\n🔧 正在配置核心 API 密钥 (直接回车可跳过已存在的设置):")
-        logger.info("状态更新")
+        logger.info("[SETUP] Starting API key configuration")
         final_kv = current_env.copy()
         
         # 1. 配置基础 key
@@ -154,7 +152,7 @@ class SelfMediaController:
 
         # 2. 配置生图 Key (二选一)
         print("\n🎨 [生图子系统] 建议在 阿里云 DashScope 和 火山引擎 Ark 之间选择一个主用引擎：")
-        logger.info("状态更新")
+        logger.info("[SETUP] Prompting for image generation provider selection")
         img_provider = input("👉 请输入序号选择 (1: 阿里云 DashScope, 2: 火山引擎 Ark): ").strip()
         
         if img_provider == "1":
@@ -178,9 +176,9 @@ class SelfMediaController:
                 f.write(f"{key}={value}\n")
 
         print(f"\n✅ 配置保存成功！文件路径: {env_path}")
-        logger.info("状态更新")
+        logger.info("[SETUP] Saving .env configuration")
         print("✨ 您现在可以运行 'python workflow_controller.py discovery' 开始使用了。")
-        logger.info("状态更新")
+        logger.info("[SETUP] Configuration saved successfully")
 
     def run_from_article(self, url_or_text):
         """
@@ -192,7 +190,7 @@ class SelfMediaController:
         url = match.group(0) if match else url_or_text
         
         print(f"🚀 启动定向创作模式 (From Article)... 原始输入中探测到的 URL: {url}")
-        logger.info("状态更新")
+        logger.info("[SETUP] Saving .env configuration")
         state = self.load_state()
         selected = {
             "id": url, 
@@ -215,7 +213,7 @@ class SelfMediaController:
         url = match.group(0) if match else url_or_text
         
         print(f"🚀 启动定向视频创作模式 (From Video)... 原始输入中探测到的 URL: {url}")
-        logger.info("状态更新")
+        logger.info("[SETUP] Configuration saved successfully")
         state = self.load_state()
         selected = {
             "id": url, 
@@ -238,7 +236,7 @@ class SelfMediaController:
         date_folder = datetime.now().strftime('%Y-%m-%d')
         
         print("🚀 启动 [飞书文档同步]...")
-        logger.info("状态更新")
+        logger.info("[DISCOVERY] Starting keyword-based discovery")
         
         # 1. 读取本地文件内容
         with open(script_path, 'r', encoding='utf-8') as f:
@@ -248,7 +246,7 @@ class SelfMediaController:
         
         # 2. 调用 OpenClaw 飞书插件创建文件夹和文档
         print(f"📁 正在飞书云空间创建文件夹「自媒体内容/{date_folder}」...")
-        logger.info("状态更新")
+        logger.info("[DISCOVERY] Using cached industry from state")
         
         result = {
             "action": "sync_to_feishu",
@@ -261,7 +259,7 @@ class SelfMediaController:
         }
         
         print("✅ 飞书同步参数已准备完成")
-        logger.info("状态更新")
+        logger.info("[DISCOVERY] Prompting for industry selection")
         return result
 
     def run_pre_discovery(self, keyword: Optional[str] = None):
@@ -357,57 +355,57 @@ class SelfMediaController:
                 state['industry'] = matched[0]
                 self.save_state(state)
                 print(f"✅ 已将您的专属行业更新为: {matched[1]}")
-                logger.info("状态更新")
+                logger.info("[DISCOVERY] Industry matched: %s", matched[1])
             else:
                 print(f"❌ 错误: 未知分类 '{keyword}'")
-                logger.error("状态更新")
+                logger.error("[STATE] Save failed: %s", e, exc_info=True)
         elif saved_industry:
             matched = find_category(saved_industry)
             if matched:
                 target_category = matched
                 print(f"✨ 检测到已保存的专属行业: {matched[1]} (如需更改，请在命令后加 --keyword <新序号>)")
-                logger.info("状态更新")
+                logger.info("[DISCOVERY] Using saved industry: %s", matched[1])
 
         if not target_category:
             print("👋 请配置您的专属行业/领域(次幂爆款分类)，系统将自动保存以便日后为您自动获取爆文：")
-            logger.info("状态更新")
+            logger.info("[DISCOVERY] Displaying category list")
             items = list(categories.items())
             for i in range(0, len(items), 5):
                 chunk = items[i:i+5]
                 line = "  ".join(f"{k}. {v[1]:<6}" for k, v in chunk)
                 print(line)
-                logger.info("状态更新")
+                logger.info("[DISCOVERY] Displaying category list")
             print("⚠️ [ACTION_REQUIRED] 等待用户输入：请通过交互通道回复你想抓取的行业序号（如'3'表示科技）。")
-            logger.warning("状态更新")
+            logger.warning("[STATE] State file not found, starting fresh")
             sys.exit(0)
 
         cimi_category_en, cimi_category_cn = target_category
         print(f"🔍 正在检索微信爆款文章 (分类: {cimi_category_cn})...")
-        logger.info("状态更新")
+        logger.info("[DISCOVERY] Searching WeChat articles, category=%s", cimi_category_cn)
 
         cimi_app_id = os.getenv("CIMI_APP_ID")
         cimi_app_secret = os.getenv("CIMI_APP_SECRET")
         if not cimi_app_id or not cimi_app_secret:
             print("❌ 未在环境变量中找到 CIMI_APP_ID 或 CIMI_APP_SECRET，请先执行 run_setup 或修改 .env 文件。")
-            logger.error("状态更新")
+            logger.error("[STATE] Save failed: %s", e, exc_info=True)
             sys.exit(1)
 
         api_base = "https://api.cimidata.com"
         headers = {"Content-Type": "application/json"}
         
         print("📥 [1/2] 正在获取次幂数据 Access Token...")
-        logger.info("状态更新")
+        logger.info("[POST] Publishing step completed")
         try:
             token_resp = requests.post(f"{api_base}/api/v2/token", json={"app_id": cimi_app_id, "app_secret": cimi_app_secret}, headers=headers, timeout=10)
             token_resp.raise_for_status()
             access_token = token_resp.json()["data"]["access_token"]
         except Exception as e:
             print(f"❌ 请求 Token 接口时发生异常: {e}")
-            logger.error("状态更新")
+            logger.error("[STATE] Save failed: %s", e, exc_info=True)
             sys.exit(1)
 
         print("📥 [2/2] 正在拉取爆款文章列表...")
-        logger.info("状态更新")
+        logger.info("[DISCOVERY] Fetching hot articles from CIMIPA API")
         candidates = []
         try:
             payload = {"category": cimi_category_en, "read_num": 1000}
@@ -431,18 +429,18 @@ class SelfMediaController:
                 state['cimi_last_id'] = str(new_last_id)
         except Exception as e:
             print(f"❌ 请求获取文章接口时发生异常: {e}")
-            logger.error("状态更新")
+            logger.error("[STATE] Save failed: %s", e, exc_info=True)
             sys.exit(1)
 
         print(f"\n=== ✨ 今日推荐 Top {len(candidates)} 爆款选题 === (数据来源: 次幂)")
-        logger.info("状态更新")
+        logger.info("[DISCOVERY] Displaying %d recommendations", len(candidates))
         for idx, c in enumerate(candidates, 1):
             print(f"{idx}. [{c['source']}] [{c['title']}]({c['id']})")
-            logger.info("状态更新")
+            logger.info("[DISCOVERY] Displaying candidate: %s", c["title"][:30])
             print(f"👤 {c['author']} | 👁️ 阅读: {c.get('comments', 0)} | 👍 赞: {c.get('likes', 0)}")
-            logger.info("状态更新")
+            logger.info("[DISCOVERY] Displaying candidate: %s", c["title"][:30])
         print("===================================")
-        logger.info("状态更新")
+        logger.info("[DISCOVERY] Display completed")
         
         state['current_step'] = "discovery_done"
         state['last_sync'] = datetime.now().isoformat()
@@ -463,7 +461,7 @@ class SelfMediaController:
         page_items = candidates[start_idx:end_idx]
         
         print(f"\n=== ✨ 今日推荐 (第 {page_index} 页) === (数据来源: 缓存)")
-        logger.info("状态更新")
+        logger.info("[DISCOVERY] Candidates saved to state")
         for idx, c in enumerate(page_items, start_idx + 1):
             source = c.get('source', '微信公众号')
             title = c.get('title', '未知文章')
@@ -472,11 +470,11 @@ class SelfMediaController:
             reads = c.get('comments', c.get('read', 0))
             likes = c.get('likes', 0)
             print(f"{idx}. [{source}] [{title}]({url})")
-            logger.info("状态更新")
+            logger.info("[DISCOVERY] Using cached last_id: %s", last_id)
             print(f"👤 {author} | 👁️ 阅读: {reads} | 👍 赞: {likes}")
-            logger.info("状态更新")
+            logger.info("[DISCOVERY] Starting from ID: %s", last_id)
         print("===================================")
-        logger.info("状态更新")
+        logger.info("[DISCOVERY] Fetching batch of articles")
 
     def _extract_article_content(self, article_url, selected=None):
         """通用素材提取服务：支持网页解析、次幂 API 保底、抖音文案提取。"""
@@ -578,7 +576,7 @@ class SelfMediaController:
                             
                         if selected:
                             print(f"✅ 从持久化库解析到素材: {selected.get('title')}")
-                            logger.info("状态更新")
+                            logger.info("[RERPOSE] Material parsed from persistent library")
                 except Exception: pass
             
             # 2. 缓存路由
@@ -593,14 +591,14 @@ class SelfMediaController:
             if (topic_id_or_cmd is None or str(topic_id_or_cmd).strip() == "None" or str(topic_id_or_cmd).strip() == "") and state.get('topic_context'):
                 selected = state['topic_context']
                 print(f"✅ 从当前会话上下文恢复素材: {selected.get('title')}")
-                logger.info("状态更新")
+                logger.info("[REPURPOSE] Material restored from session context")
             else:
                 selected = {"id": str(topic_id_or_cmd), "title": "自定义素材", "source": "自定义"}
 
         title_val = selected.get("title", "未命名素材")
         source_val = selected.get("source", "微信")
         print(f"🚀 正在重塑内容: 《{title_val}》 (源: {source_val})")
-        logger.info("状态更新")
+        logger.info("[REPURPOSE] Starting content reshaping: title=%s", title_val[:30])
         
         # ==========================
         # 1. 自动化素材抓取与提取
@@ -619,7 +617,7 @@ class SelfMediaController:
             sc = get_latest_context(raw_content)
             if sc:
                  print(f"✅ RAG 背景已注入 (约 {len(sc)} 字)")
-                 logger.info("状态更新")
+                 logger.info("[REPURPOSE] RAG background injected: %d chars", len(sc))
                  raw_content = f"【最新增强背景】:\n{sc}\n\n【原始输入素材】:\n{raw_content}"
         except Exception: pass
 
@@ -648,7 +646,7 @@ class SelfMediaController:
                         content_category = "insight"
                         wewrite_used = True
                         print(f"✅ WeWrite 改写成功：{len(final_content)} 字")
-                        logger.info("状态更新")
+                        logger.info("[REPURPOSE] WeWrite rewrite successful: %d chars", len(final_content))
             except WeWriteError as e:
                 print(f"⚠️ WeWrite 失败，降级到 prompts_manager: {e}")
                 logger.warning("WeWrite 失败，降级到 prompts_manager")
@@ -656,7 +654,7 @@ class SelfMediaController:
         if not wewrite_used and api_key and "your_api_key" not in api_key:
             import httpx
             print(f"🤖 执行场景化创作 (模型: {mid})...")
-            logger.info("状态更新")
+            logger.info("[REPURPOSE] Executing scenario creation, model=%s", mid)
             try:
                 pm_path = os.path.join(self.workspace, "prompts_manager.json")
                 conf = {}
@@ -666,7 +664,7 @@ class SelfMediaController:
                 cat = "insight"
                 if conf:
                     print(f"🧠 [1/2] 意图路由分析...")
-                    logger.info("状态更新")
+                    logger.info("[REPURPOSE] Intent routing analysis")
                     raw_ci = conf.get("classifier_prompt", "")
                     if isinstance(raw_ci, list): raw_ci = "\n".join(raw_ci)
                     ci = raw_ci.format(preview_content=raw_content[:1500])
@@ -684,13 +682,13 @@ class SelfMediaController:
                     final_pmt = raw_prompt.format(author_ip_name=ip, wechat_id=os.environ.get("AUTHOR_WECHAT_ID", "此处添加微信号").strip("'\""))
                     
                     print(f"📝 [2/2] 深度创作中...")
-                    logger.info("状态更新")
+                    logger.info("[REPURPOSE] Deep creation in progress")
                     with httpx.Client(timeout=300) as cl:
                         r = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
                             json={"model": mid, "messages": [{"role": "user", "content": f"{final_pmt}\n\n素材:\n{raw_content}"}], "temperature": 0.7})
                         final_content = r.json()["choices"][0]["message"]["content"]
                         print(f"✅ 生成完毕：{len(final_content)} 字")
-                        logger.info("状态更新")
+                        logger.info("[REPURPOSE] Generation completed: %d chars", len(final_content))
             except Exception as e: print(f"❌ LLM 阶段故障: {e}")
 
         if not final_content:
@@ -804,7 +802,7 @@ class SelfMediaController:
 
             if os.path.exists(theme_path) and api_key:
                 print(f"✨ 检测到 md2wechat-skill 引擎，根据文章分类自动选取主题：[{theme_file}]")
-                logger.info("状态更新")
+                logger.info("[REPURPOSE] md2wechat engine detected, theme=%s", theme_file)
                 try:
                     with open(theme_path, 'r', encoding='utf-8') as tf:
                         theme_cfg = yaml.safe_load(tf)
@@ -812,7 +810,7 @@ class SelfMediaController:
 
                     if html_prompt:
                         print(f"🎨 正在调度大模型进行 HTML 渲染，这可能需要几十秒...")
-                        logger.info("状态更新")
+                        logger.info("[REPURPOSE] Dispatching LLM for HTML rendering")
                         with httpx.Client(timeout=300) as cl:
                             md_to_render = f"# {nt}\n\n{ac}" if nt else ac
                             r = cl.post(f"{api_base}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
@@ -829,21 +827,21 @@ class SelfMediaController:
                                 hf.write(html_content.strip())
                             html_path = hp
                             print(f"✅ HTML 渲染完成，已生成 {hp}")
-                            logger.info("状态更新")
+                            logger.info("[REPURPOSE] HTML rendering completed: %s", hp)
                 except Exception as e:
                     print(f"❌ HTML 渲染失败：{e}")
-                    logger.error("状态更新")
+                    logger.error("[STATE] Save failed: %s", e, exc_info=True)
 
 
         print(f"✅ 成果存档 [保存文件]：")
-        logger.info("状态更新")
+        logger.info("[REPURPOSE] Archiving results: article=%s, script=%s", os.path.basename(ap), os.path.basename(sp))
         print(f"   article_path={ap}")
-        logger.info("状态更新")
+        logger.info("[REPURPOSE] Archiving results: article=%s, script=%s", os.path.basename(ap), os.path.basename(sp))
         print(f"   script_path={sp}")
-        logger.info("状态更新")
+        logger.info("[REPURPOSE] Archiving results: article=%s, script=%s", os.path.basename(ap), os.path.basename(sp))
         if html_path:
             print(f"   html_path={html_path}")
-            logger.info("状态更新")
+            logger.info("[REPURPOSE] HTML file saved: %s", os.path.basename(html_path))
         
         state['current_step'] = "waiting_for_content_review"
         state['draft_file'] = ap
@@ -856,7 +854,7 @@ class SelfMediaController:
         if 'content_category' in locals():
             state['content_category'] = content_category
             print(f"[REPURPOSE] 📂 文章分类已记录: {content_category}", flush=True)
-            logger.info("状态更新")
+        logger.info("[REPURPOSE] Saving generated content")
         self.save_state(state)
 
     def generate_image(self, prompt, model_type="seedream", size="1024*1024"):
@@ -884,17 +882,17 @@ class SelfMediaController:
             }
             try:
                 print(f"[视觉工程] 正在通过 Ark 调用火山引擎(Seedream 4.5/2.0) 渲染 {size} 比例资产...")
-                logger.info("状态更新")
+                logger.info("[VISUALS] Calling Ark API for image generation")
                 r = requests.post(url, headers=headers, json=data, timeout=60)
                 resp = r.json()
                 img_url = resp.get("data", [{}])[0].get("url")
                 if not img_url:
                     print(f"[ERROR] Volcengine API Response: {resp}")
-                    logger.error("状态更新")
+                    logger.error("[STATE] Save failed: %s", e, exc_info=True)
                 return img_url
             except Exception as e:
                 print(f"[ERROR] Volcengine generation failed: {e}")
-                logger.error("状态更新")
+                logger.error("[STATE] Save failed: %s", e, exc_info=True)
                 return None
         else:
             api_key = os.getenv("DASHSCOPE_API_KEY")
