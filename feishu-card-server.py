@@ -116,6 +116,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         import urllib.parse
+        logger.info("[HTTP] GET request: path=%s", self.path)
         if self.path.startswith("/feishu"):
             parsed = urllib.parse.urlparse(self.path)
             params = urllib.parse.parse_qs(parsed.query)
@@ -143,10 +144,12 @@ class FeishuHandler(BaseHTTPRequestHandler):
             else:
                 self.wfile.write(json.dumps({"code": 1, "msg": "unknown trigger type"}).encode('utf-8'))
         else:
+            logger.warning("[HTTP] GET request not found: path=%s", self.path)
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
+        logger.info("[HTTP] POST request: path=%s", self.path)
         if self.path != "/feishu/callback":
             self.send_response(404)
             self.end_headers()
@@ -186,6 +189,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             action_value = event_body.get('action', {}).get('value')
 
         if action_value:
+            logger.info("[EVENT] Card action detected: action_value=%s", str(action_value)[:50])
             # 🚀 解决 200672: 飞书卡片返回格式极其严格
             # 必须提供合规的 toast 字典，并且增加 Content-Length 防止底层网关截断
             resp_data = {
@@ -248,16 +252,22 @@ class FeishuHandler(BaseHTTPRequestHandler):
     # ===== Feishu API =====
 
     def get_token(self):
+        logger.debug("[FEISHU] Getting tenant access token")
         req = urllib.request.Request(
             "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
             data=json.dumps({"app_id": APP_ID, "app_secret": APP_SECRET}).encode('utf-8'),
             headers={"Content-Type": "application/json"}
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode('utf-8')).get('tenant_access_token', '')
+            token = json.loads(resp.read().decode('utf-8')).get('tenant_access_token', '')
+            if token:
+                logger.debug("[FEISHU] Token obtained successfully")
+            else:
+                logger.error("[FEISHU] Failed to get tenant_access_token")
+            return token
 
     def send_card(self, token, card):
-        """Send an interactive card to Feishu."""
+        logger.debug("[FEISHU] Sending interactive card")
         try:
             payload = {
                 "receive_id": DEFAULT_RECEIVE_ID,
@@ -273,17 +283,21 @@ class FeishuHandler(BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=15) as resp:
                 result = json.loads(resp.read().decode('utf-8'))
                 if result.get('code') == 0:
+                    logger.info("[FEISHU] Card sent successfully")
                     return True
                 else:
+                    logger.warning("[FEISHU] Card send failed: code=%s, msg=%s", result.get('code'), result.get('msg'))
                     print(f"[WARN] send_card failed: {result.get('msg')}", flush=True)
                     return False
         except Exception as e:
+            logger.error("[FEISHU] send_card exception: %s", e, exc_info=True)
             print(f"[ERROR] send_card failed: {e}", flush=True)
             return False
 
     def send_image_preview(self, token, image_path, caption=""):
-        """Send image as Feishu image message."""
+        logger.debug("[FEISHU] Sending image preview: path=%s, caption=%s", image_path, caption[:30] if caption else "none")
         if not image_path or not os.path.exists(image_path):
+            logger.warning("[FEISHU] Image not found: path=%s", image_path)
             print(f"[WARN] Image not found: {image_path}")
             return
         try:
@@ -307,7 +321,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
             upload_data = json.loads(upload_result)
             image_key = upload_data.get("data", {}).get("image_key", "")
             if not image_key:
+                logger.error("[FEISHU] Image upload failed: no image_key in response")
                 return
+            logger.info("[FEISHU] Image uploaded: image_key=%s", image_key[:20])
 
             if caption:
                 template = "blue" if "插图" in caption else "purple"
@@ -341,14 +357,17 @@ class FeishuHandler(BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=15) as resp:
                 result = json.loads(resp.read().decode('utf-8'))
                 if result.get('code') == 0:
+                    logger.info("[FEISHU] Image preview sent: image_key=%s", image_key[:20])
                     print(f"[DEBUG] Image preview sent: {image_key}")
                 else:
+                    logger.warning("[FEISHU] Image send failed: code=%s, msg=%s", result.get('code'), result.get('msg'))
                     print(f"[WARN] Send image failed: {result.get('msg')}")
         except Exception as e:
+            logger.error("[FEISHU] send_image_preview exception: %s", e, exc_info=True)
             print(f"[ERROR] send_image_preview failed: {e}")
 
     def send_text(self, token, text):
-        """Send a text message to Feishu."""
+        logger.debug("[FEISHU] Sending text message: length=%d", len(text))
         try:
             payload = {
                 "receive_id": DEFAULT_RECEIVE_ID,
@@ -364,11 +383,14 @@ class FeishuHandler(BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=15) as resp:
                 result = json.loads(resp.read().decode('utf-8'))
                 if result.get('code') == 0:
+                    logger.info("[FEISHU] Text message sent successfully")
                     return True
                 else:
+                    logger.warning("[FEISHU] Text send failed: code=%s, msg=%s", result.get('code'), result.get('msg'))
                     print(f"[WARN] send_text failed: {result.get('msg')}", flush=True)
                     return False
         except Exception as e:
+            logger.error("[FEISHU] send_text exception: %s", e, exc_info=True)
             print(f"[ERROR] send_text failed: {e}", flush=True)
             return False
 
@@ -448,7 +470,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
         return self.send_card(token, card)
 
     def update_topic_context_by_id(self, token, topic_id):
-        """Update workflow state with selected topic."""
+        logger.info("[STATE] Updating topic context: topic_id=%s", str(topic_id)[:50])
         try:
             with STATE_FILE_LOCK:
                 with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -512,7 +534,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             print(f"[ERROR] update_topic_context_by_id failed: {e}", flush=True)
 
     def save_state(self, state):
-        """Save workflow state to JSON file."""
+        logger.debug("[STATE] Saving workflow state: keys=%s", list(state.keys()))
         try:
             with STATE_FILE_LOCK:
                 with open(STATE_FILE, 'w', encoding='utf-8') as f:
@@ -526,7 +548,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
     def handle_card_action(self, action_value, token=None):
         """Route card button actions to appropriate handlers."""
+        logger.info("[ROUTE] Card action received: action_value=%s", str(action_value)[:50])
         try:
+            logger.debug("[ROUTE] Raw action_value: %s", repr(action_value))
             print(f"[DEBUG] handle_card_action: {repr(action_value)}", flush=True)
             token = self.get_token()
 
@@ -552,6 +576,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                             action_value = raw_action  # e.g. "insight_topic"
                         else:
                             action_value = f"{raw_action}_{raw_id}" if raw_id else raw_action
+                        logger.info("[ROUTE] Parsed JSON action: action_value=%s", action_value[:50])
                         print(f"[DEBUG] Parsed JSON action_value: {action_value}", flush=True)
                         # Skip the regex path below
                         parts = action_value.split('_', 1)
@@ -567,6 +592,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     print(f"[WARN] JSON parse failed: {e}", flush=True)
                     # Fall through to regex-based parsing
 
+            logger.debug("[ROUTE] Cleaned action_value: %s", str(action_value)[:50])
             # Robust splitting: handle cases where action_value might still have leftover quotes or escapes
             if isinstance(action_value, str):
                 action_value = action_value.replace('"', '').replace('\\', '').strip()
@@ -575,9 +601,11 @@ class FeishuHandler(BaseHTTPRequestHandler):
             action_type = parts[0] if parts else 'unknown'
 
             if action_type == 'next':
+                logger.info("[ROUTE] Action: next_batch - sending new topics")
                 self.send_text(token, "🔍 正在为您检索下一批爆款选题...\n\n(预计 15-30 秒)")
                 threading.Thread(target=self.run_discovery_and_send_cards, args=(token,)).start()
             elif action_type == 'pre_discovery':
+                logger.info("[ROUTE] Action: pre_discovery - sending source selection card")
                 # 用户触发预发现流程，发送选择卡片
                 try:
                     with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -588,6 +616,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 self.send_text(token, "🔍 正在为您准备选题方式选择，请稍候...\n\n(预计 5-10 秒)")
                 threading.Thread(target=self.send_source_selection_card, args=(token, industry)).start()
             elif action_type == 'select_source':
+                logger.info("[ROUTE] Action: select_source - source=%s, industry=%s", source_name, industry)
                 # 用户选择了热点来源方式
                 # action_value like "select_source_cimipa" or "select_source_free" or "select_source_cimipa_AI"
                 parts_extended = action_value.split('_')
@@ -600,42 +629,56 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 self.send_text(token, f"🔍 正在使用 [{source_name}] 为您检索爆款选题...{f' (行业：{industry})' if industry else ''}\n\n(预计 15-30 秒)")
                 threading.Thread(target=self.run_discovery_and_send_cards, args=(token, source, industry)).start()
             elif action_type == 'insight':
+                logger.info("[ROUTE] Action: insight - topic_id=%s", topic_id[:30] if topic_id else "none")
                 topic_id = parts[1] if len(parts) > 1 else None
                 if topic_id:
                     self.update_topic_context_by_id(token, topic_id)
                 self.send_text(token, "🧠 正在对该选题进行深度爆点分析与 IP 切入点规划...\n\n(预计 20-40 秒)")
                 threading.Thread(target=self.run_insight_and_send_card, args=(token, action_value)).start()
             elif action_type == 'skip':
+                logger.info("[ROUTE] Action: skip - fetching new topics")
                 self.send_text(token, "⏩ 正在跳过并检索新选题...")
                 threading.Thread(target=self.run_discovery_and_send_cards, args=(token,)).start()
             elif action_type == 'refresh':
+                logger.info("[ROUTE] Action: refresh - refreshing topic pool")
                 self.send_text(token, "🔄 正在刷新爆款库...")
                 threading.Thread(target=self.run_discovery_and_send_cards, args=(token,)).start()
             elif action_type == 'init':
+                logger.info("[ROUTE] Action: init - sending init guide")
                 threading.Thread(target=self.run_init_and_send_card, args=(token,)).start()
             elif action_type == 'rewrite':
+                logger.info("[ROUTE] Action: rewrite - repurpose request")
                 self.send_text(token, "📝 正在为您进行 IP 化改写，生成脚本与长文...\n\n(预计 1-2 分钟，请稍候)")
                 threading.Thread(target=self.run_repurpose_and_send_card, args=(token, action_value)).start()
             elif action_type == 'approve':
+                logger.info("[ROUTE] Action: approve - tracking approval")
                 threading.Thread(target=self.run_approve_and_track, args=(token, action_value)).start()
             elif action_type == 'modify':
+                logger.info("[ROUTE] Action: modify - modifying content")
                 threading.Thread(target=self.run_modify_and_send_card, args=(token, action_value)).start()
             elif action_type == 'rescript':
+                logger.info("[ROUTE] Action: rescript - rescripting")
                 threading.Thread(target=self.run_rescript_and_send_card, args=(token, action_value)).start()
             elif action_type == 'rearticle':
+                logger.info("[ROUTE] Action: rearticle - re-articling")
                 threading.Thread(target=self.run_rearticle_and_send_card, args=(token, action_value)).start()
             elif action_type.startswith('post'):
+                logger.info("[ROUTE] Action: post - publishing to WeChat")
                 self.send_text(token, "🚀 正在将内容同步至公众号草稿箱...")
                 threading.Thread(target=self.run_post, args=(token,)).start()
             elif action_type == 'copy':
+                logger.info("[ROUTE] Action: copy - sending copy guide")
                 self.send_copy_guide(token)
             elif action_type.startswith('retry_visual_'):
                 mtype = action_type.replace('retry_visual_', '')
+                logger.info("[ROUTE] Action: retry_visual - model=%s", mtype)
                 self.send_text(token, f"🔄 正在尝试使用 [{mtype}] 引擎重新绘图，请稍候...")
                 threading.Thread(target=self._run_workflow_async, args=(token, ['python', '-u', 'workflow_controller.py', 'visuals', '--model', mtype])).start()
             else:
+                logger.warning("[ROUTE] Unknown action_type: action_type=%s", action_type)
                 print(f"[DEBUG] Unknown action_type: {action_type}", flush=True)
         except Exception as e:
+            logger.error("[ROUTE] handle_card_action exception: %s", e, exc_info=True)
             print(f"[ERROR] handle_card_action failed: {e}", flush=True)
             import traceback
             traceback.print_exc()
@@ -665,11 +708,13 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 
                 clean_line = line.strip()
                 if clean_line:
+                    logger.debug("[EXEC] Workflow output: %s", clean_line[:100])
                     print(f"[workflow] {clean_line}", flush=True)
                     full_output.append(clean_line)
                     
                     # 绝对稳健协议解析：[FEISHU_PREVIEW] TYPE=XXX PATH=YYY
                     if "[FEISHU_PREVIEW]" in clean_line:
+                        logger.info("[EXEC] FEISHU_PREVIEW detected: %s", clean_line[:100])
                         try:
                             # 1. 提取 PATH= 之后的部分
                             if "PATH=" in clean_line:
@@ -760,7 +805,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
     # ===== Action Handlers =====
 
     def run_init_and_send_card(self, token):
-        """Send initialization guide card."""
+        logger.info("[INIT] Sending initialization guide")
         try:
             print("[DEBUG] run_init_and_send_card starting", flush=True)
             init_text = (
@@ -792,6 +837,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
     def run_discovery_and_send_cards(self, token, source='cimipa', industry=None):
         """Run discovery and send topic cards."""
         try:
+            logger.info("[DISCOVERY] Starting topic discovery: source=%s, industry=%s", source, industry)
             print("[DEBUG] run_discovery_and_send_cards starting", flush=True)
             os.chdir(WORKDIR)
 
@@ -865,6 +911,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.send_text(token, f"⚠️ 操作失败: {str(e)[:100]}")
 
     def parse_discovery_output(self, output):
+        logger.debug("[PARSE] Starting to parse discovery output: length=%d", len(output))
         """Parse topic data from workflow output.
         Returns list of dicts with keys: id (URL), title, source, author, score, data (display string), analysis.
         """
@@ -1121,6 +1168,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
     def run_repurpose_and_send_card(self, token, action_value):
         """Run repurpose - generate script + article, send two review cards."""
+        logger.info("[REPURPOSE] Starting content repurpose: action_value=%s", str(action_value)[:50])
         try:
             os.chdir(WORKDIR)
             start_time = time.time()
@@ -1425,6 +1473,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
         ))
 
     def run_approve_and_track(self, token, action_value):
+        logger.info("[APPROVE] Processing approval: action_value=%s", action_value)
         """Handle approve button - track approvals, trigger visuals when both approved."""
         parts = action_value.split('_', 1)
         if len(parts) < 2:
@@ -1728,7 +1777,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.send_text(token, f"⚠️ 发布失败: {str(e)[:100]}")
 
     def send_copy_guide(self, token):
-        """Guide user to copy content."""
+        logger.debug("[COPY] Sending copy guide")
         try:
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
@@ -1750,6 +1799,7 @@ def main():
     import atexit
     import subprocess
     import time
+    logger.info("[SERVER] Starting Feishu card server (PID: %d)", os.getpid())
     
     # 1. 强力互斥并支持“新陈代谢”：启动新实例时，自动杀掉旧实例
     lock_file = ".feishu_server_lock"
