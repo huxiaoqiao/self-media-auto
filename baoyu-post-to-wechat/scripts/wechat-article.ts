@@ -129,6 +129,9 @@ async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, con
   const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: fileUrl });
   const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
 
+  // Activate the target tab to ensure keyboard events work correctly
+  await cdp.send('Target.activateTarget', { targetId });
+
   await cdp.send('Page.enable', {}, { sessionId });
   await cdp.send('Runtime.enable', {}, { sessionId });
   await sleep(2000);
@@ -182,6 +185,10 @@ async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, con
 
 async function pasteFromClipboardInEditor(session: ChromeSession): Promise<void> {
   console.log('[wechat] Pasting content...');
+
+  // Activate the editor tab to ensure keyboard events work correctly
+  await session.cdp.send('Target.activateTarget', { targetId: session.targetId });
+
   await sendPaste(session.cdp, session.sessionId);
   await sleep(1000);
 }
