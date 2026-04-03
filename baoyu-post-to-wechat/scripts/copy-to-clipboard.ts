@@ -244,7 +244,26 @@ async function copyHtmlWindows(htmlFilePath: string): Promise<void> {
   const ps = [
     'Add-Type -AssemblyName System.Windows.Forms',
     `$html = Get-Content -Raw -LiteralPath '${escaped}'`,
-    '[System.Windows.Forms.Clipboard]::SetText($html, [System.Windows.Forms.TextDataFormat]::Html)',
+    // 构建 CF_HTML 格式所需的头部
+    // 格式：Version:0.9\r\nStartHTML:xxxxxxxx\r\nEndHTML:xxxxxxxx\r\nStartFragment:xxxxxxxx\r\nEndFragment:xxxxxxxx\r\n<html>...</html>
+    '$wrappedHtml = "Version:0.9`r`n"',
+    '$startHtml = $wrappedHtml.Length',
+    '$wrappedHtml += "StartHTML:0000000000`r`n"',
+    '$endHtml = $wrappedHtml.Length + $html.Length + 14',
+    '$wrappedHtml += "EndHTML:" + $endHtml.ToString("0000000000") + "`r`n"',
+    '$startFragment = $wrappedHtml.Length + 19',
+    '$wrappedHtml += "StartFragment:" + $startFragment.ToString("0000000000") + "`r`n"',
+    '$endFragment = $startFragment + $html.Length',
+    '$wrappedHtml += "EndFragment:" + $endFragment.ToString("0000000000") + "`r`n"',
+    '$wrappedHtml += "<html><body>`r`n"',
+    '$wrappedHtml += $html',
+    '$wrappedHtml += "`r`n</body></html>"',
+    // 更新 StartHTML 和 EndHTML 的偏移量
+    '$startHtmlStr = $startHtml.ToString("0000000000")',
+    '$wrappedHtml = $wrappedHtml.Replace("StartHTML:0000000000", "StartHTML:" + $startHtmlStr)',
+    '$dataObj = New-Object System.Windows.Forms.DataObject',
+    '$dataObj.SetData([System.Windows.Forms.DataFormats]::Html, $wrappedHtml)',
+    '[System.Windows.Forms.Clipboard]::SetDataObject($dataObj, $true)',
   ].join('; ');
   await runCommand('powershell.exe', ['-NoProfile', '-Sta', '-Command', ps]);
 }
