@@ -1,8 +1,8 @@
-﻿import { readFile, writeFile } from 'node:fs/promises';
+﻿import { writeFile, mkdtemp, rm } from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
-import { setTimeout } from 'node:timers/promises';
+import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 import { fileURLToPath } from 'node:url';
@@ -178,31 +178,48 @@ async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, con
     await sleep(500);
   }
 
-  console.log('[wechat] Selecting #output content...');
-  const selectResult = await cdp.send<{ result: { value: unknown } }>('Runtime.evaluate', {
+  // 获取替换后的 HTML 内容
+  console.log('[wechat] Getting HTML content...');
+  const htmlContent = await cdp.send<{ result: { value: string } }>('Runtime.evaluate', {
     expression: `
       (function() {
         const output = document.querySelector('#output') || document.body;
-        const range = document.createRange();
-        range.selectNodeContents(output);
-        const selection = window.getSelection();
-        selection.removeAllRanges();
-        selection.addRange(range);
-        return { success: true, htmlLength: output.innerHTML.length };
+        return output.innerHTML;
       })()
     `,
     returnByValue: true,
   }, { sessionId });
-  console.log('[wechat] Content selected');
-  await sleep(300);
 
-  // 使用 CDP 发送 Ctrl+C 复制 HTML 格式内容
-  console.log('[wechat] Copying content using CDP key event...');
-  await sendCopy(cdp, sessionId);
-  await sleep(1000);
+  console.log(`[wechat] HTML content length: ${htmlContent.result.value.length}`);
 
+  // 关闭标签页
   console.log('[wechat] Closing HTML tab...');
   await cdp.send('Target.closeTarget', { targetId });
+
+  // 使用 copy-to-clipboard.ts 脚本复制 HTML 内容到系统剪贴板
+  console.log('[wechat] Copying HTML to clipboard using script...');
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const copyScript = path.join(__dirname, './copy-to-clipboard.ts');
+
+  // 将 HTML 内容写入临时文件
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'wechat-copy-'));
+  const tempHtmlPath = path.join(tempDir, 'content.html');
+  await writeFile(tempHtmlPath, htmlContent.result.value, 'utf8');
+
+  try {
+    const result = spawnSync('npx', ['-y', 'bun', copyScript, 'html', '--file', tempHtmlPath], { stdio: 'pipe' });
+    if (result.status !== 0) {
+      const stderr = result.stderr?.toString() || '';
+      console.error('[wechat] Copy script failed:', stderr);
+    } else {
+      console.log('[wechat] HTML copied to clipboard successfully');
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+
+  await sleep(1000);
 }
 
 
