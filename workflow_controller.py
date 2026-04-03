@@ -1191,7 +1191,10 @@ class SelfMediaController:
             script = os.path.join(baoyu_dir, "scripts", "wechat-article.ts" if method == "browser" else "wechat-api.ts")
             args = [bun_path, script] if bun_path else [npx_cmd, "-y", "bun", script]
             
-            if is_html: args.extend(["--html", draft_file])
+            if is_html:
+                args.extend(["--html", draft_file])
+                for img in state.get('article_images', []):
+                    args.extend(["--image", os.path.abspath(img)])
             else: args.extend(["--markdown", draft_file, "--theme", wechat_theme])
             if cover_path and os.path.exists(cover_path): args.extend(["--cover", os.path.abspath(cover_path)])
             if title: args.extend(["--title", title])

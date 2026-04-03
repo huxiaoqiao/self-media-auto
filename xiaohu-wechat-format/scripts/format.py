@@ -293,6 +293,7 @@ def fix_cjk_bold_punctuation(text: str) -> str:
 def convert_wikilinks(text: str, vault_root: Path, output_dir: Path) -> str:
     """把 Obsidian ![[image.jpg]] 转为 <img> 标签，复制图片到输出目录"""
     images_dir = output_dir / "images"
+    img_counter = [0]
     # 搜索路径：vault 目录（如需额外图片目录，在 config.json 的 image_search_paths 中配置）
     search_roots = [vault_root]
     # 支持自定义图片搜索目录
@@ -332,8 +333,10 @@ def convert_wikilinks(text: str, vault_root: Path, output_dir: Path) -> str:
 def copy_markdown_images(text: str, input_dir: Path, output_dir: Path) -> str:
     """处理标准 Markdown 图片 ![alt](path)，把本地相对路径图片复制到输出目录"""
     images_dir = output_dir / "images"
+    img_counter = [0]
 
     def replace_md_img(match):
+        img_counter[0] += 1
         alt = match.group(1)
         src = match.group(2).strip()
         # 跳过外链（http/https）
@@ -346,8 +349,8 @@ def copy_markdown_images(text: str, input_dir: Path, output_dir: Path) -> str:
             dest = images_dir / img_path.name
             if not dest.exists():
                 shutil.copy2(img_path, dest)
-            # 统一改为 images/filename 路径
-            return f'![{alt}](images/{img_path.name})'
+            # 统一输出占位符供 baoyu 替换
+            return f'WECHATIMGPH_{img_counter[0]}'
         return match.group(0)
 
     return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_md_img, text)

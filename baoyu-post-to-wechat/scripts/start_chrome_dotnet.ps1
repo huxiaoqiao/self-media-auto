@@ -13,7 +13,6 @@ Write-Host "[ChromeLauncher] Starting Chrome..."
 Write-Host "[ChromeLauncher] Port: $Port"
 Write-Host "[ChromeLauncher] Profile: $Profile"
 
-# UseShellExecute=true 让 Chrome 在用户桌面上下文运行
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $ChromePath
 $psi.Arguments = $chromeArgs
@@ -27,5 +26,27 @@ try {
     Write-Host "[ChromeLauncher] ERROR: $_"
 }
 
-Start-Sleep 6
+Start-Sleep -Seconds 2
+
+$maxWait = 20
+$waited = 0
+$portOpen = $false
+
+while ($waited -lt $maxWait -and -not $portOpen) {
+    Start-Sleep -Milliseconds 500
+    $waited++
+    try {
+        $response = Invoke-WebRequest -Uri "http://localhost:$Port/json" -UseBasicParsing -TimeoutSec 1 -ErrorAction SilentlyContinue
+        if ($response.StatusCode -eq 200) {
+            $portOpen = $true
+            Write-Host "[ChromeLauncher] Debug port ready after $waited checks"
+        }
+    } catch {
+    }
+}
+
+if (-not $portOpen) {
+    Write-Host "[ChromeLauncher] Warning: Debug port not ready after $maxWait checks, proceeding anyway"
+}
+
 Write-Host "[ChromeLauncher] Done."

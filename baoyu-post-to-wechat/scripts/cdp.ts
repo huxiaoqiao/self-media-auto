@@ -110,9 +110,10 @@ export async function tryConnectExisting(port: number): Promise<CdpConnection | 
       return await CdpConnection.connect(wsUrl, 30_000);
     }
     
-    // 原有本地连接逻辑保持不变
-    const wsUrl = await waitForChromeDebugPort(port, 5_000, { includeLastError: true });
-    return await CdpConnection.connect(wsUrl, 5_000);
+    // 原有本地连接逻辑保持不变（等待 Chrome 启动并打开调试端口）
+    const wsUrl = await waitForChromeDebugPort(port, 20_000, { includeLastError: true });
+    if (!wsUrl) throw new Error(`Chrome debug port ${port} not ready`);
+    return await CdpConnection.connect(wsUrl, 20_000);
   } catch {
     return null;
   }
@@ -175,7 +176,7 @@ export async function launchChrome(
   });
 
   // 等待 Chrome 窗口完全出现
-  await sleep(6000);
+  await sleep(2000);
 
   // 强制将 Chrome 窗口推到前台
   const scriptPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'activate_chrome.ps1');
@@ -186,7 +187,9 @@ export async function launchChrome(
     });
   } catch { /* ignore */ }
 
-  const wsUrl = await waitForChromeDebugPort(port, 30_000, { includeLastError: true });
+  // 等待 Chrome 调试端口就绪（Windows 上 Chrome 启动较慢，最多等 60 秒）
+  const wsUrl = await waitForChromeDebugPort(port, 60_000, { includeLastError: true });
+  if (!wsUrl) throw new Error(`Chrome debug port ${port} not ready after 60s`);
   const cdp = await CdpConnection.connect(wsUrl, 30_000);
 
   // Return a placeholder chrome process
