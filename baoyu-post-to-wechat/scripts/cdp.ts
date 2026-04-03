@@ -1,7 +1,6 @@
 import { execSync, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
 
 import {
   CdpConnection,
@@ -110,10 +109,9 @@ export async function tryConnectExisting(port: number): Promise<CdpConnection | 
       return await CdpConnection.connect(wsUrl, 30_000);
     }
     
-    // 原有本地连接逻辑保持不变（等待 Chrome 启动并打开调试端口）
-    const wsUrl = await waitForChromeDebugPort(port, 20_000, { includeLastError: true });
-    if (!wsUrl) throw new Error(`Chrome debug port ${port} not ready`);
-    return await CdpConnection.connect(wsUrl, 20_000);
+    // 原有本地连接逻辑保持不变
+    const wsUrl = await waitForChromeDebugPort(port, 5_000, { includeLastError: true });
+    return await CdpConnection.connect(wsUrl, 5_000);
   } catch {
     return null;
   }
@@ -145,56 +143,18 @@ export async function launchChrome(
   const port = await getFreePort();
   console.log(`[cdp] Launching Chrome (profile: ${profile})`);
 
-  // 用 start 命令直接启动 Chrome，确保窗口可见并到前台
-  const chromeArgs = [
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profile}`,
-    '--disable-blink-features=AutomationControlled',
-    '--start-maximized',
-    '--no-first-run',
-    '--new-window',
-    '--no-sandbox',
-  ];
-
-  const { spawn, spawnSync } = await import('node:child_process');
-  // 用 PowerShell .NET Process API 启动 Chrome（确保窗口在用户当前桌面可见）
-  // 注意：detached=true + stdio=ignore 会导致 Chrome 运行在隔离桌面会话，CDP 无法连接
-  // 因此改用 stdio=inherit + detached=false，让 Chrome 在同一桌面会话运行
-  const launchScript = path.join(path.dirname(fileURLToPath(import.meta.url)), 'start_chrome_dotnet.ps1');
-  console.log(`[cdp] Launching Chrome via .NET Process API...`);
-  spawn('powershell', [
-    '-ExecutionPolicy', 'Bypass',
-    '-File', launchScript,
-    '-ChromePath', chromePath,
-    '-Url', url,
-    '-Port', String(port),
-    '-Profile', profile,
-  ], {
-    stdio: 'inherit',
-    detached: false,
-    windowsHide: false,
+  const chrome = await launchChromeBase({
+    chromePath,
+    profileDir: profile,
+    port,
+    url,
+    extraArgs: ['--disable-blink-features=AutomationControlled', '--start-maximized'],
   });
 
-  // 等待 Chrome 窗口完全出现
-  await sleep(2000);
-
-  // 强制将 Chrome 窗口推到前台
-  const scriptPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'activate_chrome.ps1');
-  try {
-    spawn('powershell', ['-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
-      stdio: 'ignore',
-      detached: true,
-    });
-  } catch { /* ignore */ }
-
-  // 等待 Chrome 调试端口就绪（Windows 上 Chrome 启动较慢，最多等 60 秒）
-  const wsUrl = await waitForChromeDebugPort(port, 60_000, { includeLastError: true });
-  if (!wsUrl) throw new Error(`Chrome debug port ${port} not ready after 60s`);
+  const wsUrl = await waitForChromeDebugPort(port, 30_000, { includeLastError: true });
   const cdp = await CdpConnection.connect(wsUrl, 30_000);
 
-  // Return a placeholder chrome process
-  const dummyChrome = spawn('cmd', ['/c', 'echo', 'chrome-launched'], { stdio: 'ignore' });
-  return { cdp, chrome: dummyChrome };
+  return { cdp, chrome };
 }
 
 export async function getPageSession(cdp: CdpConnection, urlPattern: string): Promise<ChromeSession> {
@@ -214,44 +174,6 @@ export async function getPageSession(cdp: CdpConnection, urlPattern: string): Pr
 
   return { cdp, sessionId, targetId: pageTarget.targetId };
 }
-
-export async function maximizeChromeWindow(cdp: CdpConnection): Promise<void> {
-  try {
-    // Find the browser target to get windowId
-    const targets = await cdp.send<{ targetInfos: Array<{ targetId: string; url: string; type: string }> }>('Target.getTargets');
-    // The browser target has type='page' but empty URL, or we can use Desktop window
-    // Try to get window bounds from Browser.getWindowBounds for the default window
-    // Chrome DevTools Protocol - get default browser windowId is usually 1
-    await cdp.send('Browser.setWindowBounds', {
-      windowId: 1,
-      bounds: { windowState: 'maximized' }
-    });
-    console.log('[cdp] Browser window maximized via CDP');
-  } catch (e) {
-    // Fallback: try all windowIds
-    try {
-      for (let wid = 1; wid <= 10; wid++) {
-        await cdp.send('Browser.setWindowBounds', {
-          windowId: wid,
-          bounds: { windowState: 'maximized' }
-        });
-        console.log(`[cdp] Browser window ${wid} maximized`);
-        break;
-      }
-    } catch {
-      console.log('[cdp] Could not maximize window via CDP, trying BringToFront');
-      // Last resort: try to bring to front via CDP
-      try {
-        const pageTargets = await cdp.send<{ targetInfos: Array<{ targetId: string; url: string; type: string }> }>('Target.getTargets');
-        const firstPage = pageTargets.targetInfos.find(t => t.type === 'page');
-        if (firstPage) {
-          await cdp.send('Target.activateTarget', { targetId: firstPage.targetId });
-        }
-      } catch { /* ignore */ }
-    }
-  }
-}
-
 
 export async function waitForNewTab(
   cdp: CdpConnection,

@@ -244,32 +244,7 @@ async function copyHtmlWindows(htmlFilePath: string): Promise<void> {
   const ps = [
     'Add-Type -AssemblyName System.Windows.Forms',
     `$html = Get-Content -Raw -LiteralPath '${escaped}'`,
-    // 构建 CF_HTML 格式所需的头部
-    // 格式：Version:0.9\\r\\nStartHTML:xxxxxxxx\\r\\nEndHTML:xxxxxxxx\\r\\nStartFragment:xxxxxxxx\\r\\nEndFragment:xxxxxxxx\\r\\n<html>...</html>
-    // 注意：偏移量计算的是最终字符串的字节位置
-    '$htmlContent = $html',
-    '$htmlTag = "<html>"',
-    '$bodyTag = "<body>"',
-    '$endHtml = "</html>"',
-    '$endBody = "</body>"',
-    '$crlf = "`r`n"',
-    '$header = "Version:0.9" + $crlf',
-    '$header += "StartHTML:0000000000" + $crlf',
-    '$header += "EndHTML:0000000000" + $crlf',
-    '$header += "StartFragment:0000000000" + $crlf',
-    '$header += "EndFragment:0000000000" + $crlf',
-    '$startHtmlLen = $header.Length + 7',
-    '$header = $header.Replace("StartHTML:0000000000", "StartHTML:" + $startHtmlLen.ToString("0000000000"))',
-    '$fragmentStart = $header.Length + $htmlTag.Length + $bodyTag.Length + $crlf.Length',
-    '$fragmentEnd = $fragmentStart + $htmlContent.Length',
-    '$endHtmlPos = $fragmentEnd + $crlf.Length + $endBody.Length + $crlf.Length + $endHtml.Length',
-    '$header = $header.Replace("StartFragment:0000000000", "StartFragment:" + $fragmentStart.ToString("0000000000"))',
-    '$header = $header.Replace("EndFragment:0000000000", "EndFragment:" + $fragmentEnd.ToString("0000000000"))',
-    '$header = $header.Replace("EndHTML:0000000000", "EndHTML:" + $endHtmlPos.ToString("0000000000"))',
-    '$wrappedHtml = $header + $htmlTag + $bodyTag + $crlf + $htmlContent + $crlf + $endBody + $crlf + $endHtml',
-    '$dataObj = New-Object System.Windows.Forms.DataObject',
-    '$dataObj.SetData([System.Windows.Forms.DataFormats]::Html, $wrappedHtml)',
-    '[System.Windows.Forms.Clipboard]::SetDataObject($dataObj, $true)',
+    '[System.Windows.Forms.Clipboard]::SetText($html, [System.Windows.Forms.TextDataFormat]::Html)',
   ].join('; ');
   await runCommand('powershell.exe', ['-NoProfile', '-Sta', '-Command', ps]);
 }

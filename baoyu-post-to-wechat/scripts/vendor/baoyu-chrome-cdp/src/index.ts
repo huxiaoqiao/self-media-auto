@@ -43,19 +43,6 @@ type FindExistingChromeDebugPortOptions = {
   timeoutMs?: number;
 };
 
-export type ChromeChannel = "stable" | "beta" | "canary" | "dev";
-
-export type DiscoveredChrome = {
-  port: number;
-  wsUrl: string;
-};
-
-type DiscoverRunningChromeOptions = {
-  channels?: ChromeChannel[];
-  userDataDirs?: string[];
-  timeoutMs?: number;
-};
-
 type LaunchChromeOptions = {
   chromePath: string;
   profileDir: string;
@@ -86,7 +73,6 @@ type OpenPageSessionOptions = {
 export type PageSession = {
   sessionId: string;
   targetId: string;
-  createdTarget: boolean;
 };
 
 export function sleep(ms: number): Promise<void> {
@@ -187,32 +173,16 @@ async function isDebugPortReady(port: number, timeoutMs = 3_000): Promise<boolea
   }
 }
 
-function isPortListening(port: number, timeoutMs = 3_000): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = new net.Socket();
-    const timer = setTimeout(() => { socket.destroy(); resolve(false); }, timeoutMs);
-    socket.once("connect", () => { clearTimeout(timer); socket.destroy(); resolve(true); });
-    socket.once("error", () => { clearTimeout(timer); resolve(false); });
-    socket.connect(port, "127.0.0.1");
-  });
-}
-
-function parseDevToolsActivePort(filePath: string): { port: number; wsPath: string } | null {
-  try {
-    const content = fs.readFileSync(filePath, "utf-8");
-    const lines = content.split(/\r?\n/);
-    const port = Number.parseInt(lines[0]?.trim() ?? "", 10);
-    const wsPath = lines[1]?.trim();
-    if (port > 0 && wsPath) return { port, wsPath };
-  } catch {}
-  return null;
-}
-
 export async function findExistingChromeDebugPort(options: FindExistingChromeDebugPortOptions): Promise<number | null> {
   const timeoutMs = options.timeoutMs ?? 3_000;
-  const parsed = parseDevToolsActivePort(path.join(options.profileDir, "DevToolsActivePort"));
+  const portFile = path.join(options.profileDir, "DevToolsActivePort");
 
-  if (parsed && parsed.port > 0 && await isDebugPortReady(parsed.port, timeoutMs)) return parsed.port;
+  try {
+    const content = fs.readFileSync(portFile, "utf-8");
+    const [portLine] = content.split(/\r?\n/);
+    const port = Number.parseInt(portLine?.trim() ?? "", 10);
+    if (port > 0 && await isDebugPortReady(port, timeoutMs)) return port;
+  } catch {}
 
   if (process.platform === "win32") return null;
 
@@ -230,88 +200,6 @@ export async function findExistingChromeDebugPort(options: FindExistingChromeDeb
       if (port > 0 && await isDebugPortReady(port, timeoutMs)) return port;
     }
   } catch {}
-
-  return null;
-}
-
-export function getDefaultChromeUserDataDirs(channels: ChromeChannel[] = ["stable"]): string[] {
-  const home = os.homedir();
-  const dirs: string[] = [];
-
-  const channelDirs: Record<string, { darwin: string; linux: string; win32: string }> = {
-    stable: {
-      darwin: path.join(home, "Library", "Application Support", "Google", "Chrome"),
-      linux: path.join(home, ".config", "google-chrome"),
-      win32: path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Google", "Chrome", "User Data"),
-    },
-    beta: {
-      darwin: path.join(home, "Library", "Application Support", "Google", "Chrome Beta"),
-      linux: path.join(home, ".config", "google-chrome-beta"),
-      win32: path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Google", "Chrome Beta", "User Data"),
-    },
-    canary: {
-      darwin: path.join(home, "Library", "Application Support", "Google", "Chrome Canary"),
-      linux: path.join(home, ".config", "google-chrome-canary"),
-      win32: path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Google", "Chrome SxS", "User Data"),
-    },
-    dev: {
-      darwin: path.join(home, "Library", "Application Support", "Google", "Chrome Dev"),
-      linux: path.join(home, ".config", "google-chrome-dev"),
-      win32: path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Google", "Chrome Dev", "User Data"),
-    },
-  };
-
-  const platform = process.platform === "darwin" ? "darwin" : process.platform === "win32" ? "win32" : "linux";
-
-  for (const ch of channels) {
-    const entry = channelDirs[ch];
-    if (entry) dirs.push(entry[platform]);
-  }
-
-  return dirs;
-}
-
-// Best-effort reuse of an already-running local CDP session discovered from
-// known Chrome user-data dirs. This is distinct from Chrome DevTools MCP's
-// prompt-based --autoConnect flow.
-export async function discoverRunningChromeDebugPort(options: DiscoverRunningChromeOptions = {}): Promise<DiscoveredChrome | null> {
-  const channels = options.channels ?? ["stable", "beta", "canary", "dev"];
-  const timeoutMs = options.timeoutMs ?? 3_000;
-
-  const userDataDirs = (options.userDataDirs ?? getDefaultChromeUserDataDirs(channels))
-    .map((dir) => path.resolve(dir));
-  for (const dir of userDataDirs) {
-    const parsed = parseDevToolsActivePort(path.join(dir, "DevToolsActivePort"));
-    if (!parsed) continue;
-    if (await isPortListening(parsed.port, timeoutMs)) {
-      return { port: parsed.port, wsUrl: `ws://127.0.0.1:${parsed.port}${parsed.wsPath}` };
-    }
-  }
-
-  if (process.platform !== "win32") {
-    try {
-      const result = spawnSync("ps", ["aux"], { encoding: "utf-8", timeout: 5_000 });
-      if (result.status === 0 && result.stdout) {
-        const lines = result.stdout
-          .split("\n")
-          .filter((line) =>
-            line.includes("--remote-debugging-port=") &&
-            userDataDirs.some((dir) => line.includes(dir))
-          );
-
-        for (const line of lines) {
-          const portMatch = line.match(/--remote-debugging-port=(\d+)/);
-          const port = Number.parseInt(portMatch?.[1] ?? "", 10);
-          if (port > 0 && await isDebugPortReady(port, timeoutMs)) {
-            try {
-              const version = await fetchJson<{ webSocketDebuggerUrl?: string }>(`http://127.0.0.1:${port}/json/version`, { timeoutMs });
-              if (version.webSocketDebuggerUrl) return { port, wsUrl: version.webSocketDebuggerUrl };
-            } catch {}
-          }
-        }
-      }
-    } catch {}
-  }
 
   return null;
 }
@@ -478,7 +366,7 @@ export function killChrome(chrome: ChildProcess): void {
     chrome.kill("SIGTERM");
   } catch {}
   setTimeout(() => {
-    if (chrome.exitCode === null && chrome.signalCode === null) {
+    if (!chrome.killed) {
       try {
         chrome.kill("SIGKILL");
       } catch {}
@@ -486,45 +374,12 @@ export function killChrome(chrome: ChildProcess): void {
   }, 2_000).unref?.();
 }
 
-export async function gracefulKillChrome(
-  chrome: ChildProcess,
-  port?: number,
-  timeoutMs = 6_000,
-): Promise<void> {
-  if (chrome.exitCode !== null || chrome.signalCode !== null) return;
-
-  const exitPromise = new Promise<void>((resolve) => {
-    chrome.once("exit", () => resolve());
-  });
-
-  killChrome(chrome);
-
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (chrome.exitCode !== null || chrome.signalCode !== null) return;
-    if (port !== undefined && !await isPortListening(port, 250)) return;
-
-    const exited = await Promise.race([
-      exitPromise.then(() => true),
-      sleep(100).then(() => false),
-    ]);
-    if (exited) return;
-  }
-
-  await Promise.race([
-    exitPromise,
-    sleep(250),
-  ]);
-}
-
 export async function openPageSession(options: OpenPageSessionOptions): Promise<PageSession> {
   let targetId: string;
-  let createdTarget = false;
 
   if (options.reusing) {
     const created = await options.cdp.send<{ targetId: string }>("Target.createTarget", { url: options.url });
     targetId = created.targetId;
-    createdTarget = true;
   } else {
     const targets = await options.cdp.send<{ targetInfos: ChromeTargetInfo[] }>("Target.getTargets");
     const existing = targets.targetInfos.find(options.matchTarget);
@@ -533,7 +388,6 @@ export async function openPageSession(options: OpenPageSessionOptions): Promise<
     } else {
       const created = await options.cdp.send<{ targetId: string }>("Target.createTarget", { url: options.url });
       targetId = created.targetId;
-      createdTarget = true;
     }
   }
 
@@ -550,5 +404,5 @@ export async function openPageSession(options: OpenPageSessionOptions): Promise<
   if (options.enableDom) await options.cdp.send("DOM.enable", {}, { sessionId });
   if (options.enableNetwork) await options.cdp.send("Network.enable", {}, { sessionId });
 
-  return { sessionId, targetId, createdTarget };
+  return { sessionId, targetId };
 }

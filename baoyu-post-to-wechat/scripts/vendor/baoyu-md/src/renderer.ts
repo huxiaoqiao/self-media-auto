@@ -109,13 +109,6 @@ function parseFrontMatterAndContent(markdownText: string): ParseResult {
   }
 }
 
-function wrapInlineCode(value: string): string {
-  const runs = value.match(/`+/g);
-  const fence = "`".repeat(Math.max(...(runs?.map((run) => run.length) ?? [0])) + 1);
-  const padding = /^ *$/.test(value) ? "" : " ";
-  return `${fence}${padding}${value}${padding}${fence}`;
-}
-
 export function initRenderer(opts: IOpts = {}): RendererAPI {
   const footnotes: [number, string, string][] = [];
   let footnoteIndex = 0;
@@ -376,7 +369,6 @@ function preprocessCjkEmphasis(markdown: string): string {
   const tree = processor.parse(markdown);
   const extractText = (node: any): string => {
     if (node.type === "text") return node.value;
-    if (node.type === "inlineCode") return wrapInlineCode(node.value);
     if (node.children) return node.children.map(extractText).join("");
     return "";
   };

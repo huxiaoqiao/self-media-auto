@@ -100,13 +100,13 @@ export function normalizeCssText(cssText: string, style: StyleConfig = DEFAULT_S
     .replace(/var\(--md-accent-color\)/g, style.accentColor)
     .replace(/var\(--md-container-bg\)/g, style.containerBg)
     .replace(/hsl\(var\(--foreground\)\)/g, "#3f3f3f")
-    .replace(/--md-primary-color:\s*[^;]+;?/g, "")
-    .replace(/--md-font-family:\s*[^;]+;?/g, "")
-    .replace(/--md-font-size:\s*[^;]+;?/g, "")
-    .replace(/--blockquote-background:\s*[^;]+;?/g, "")
-    .replace(/--md-accent-color:\s*[^;]+;?/g, "")
-    .replace(/--md-container-bg:\s*[^;]+;?/g, "")
-    .replace(/--foreground:\s*[^;]+;?/g, "");
+    .replace(/--md-primary-color:\s*[^;"']+;?/g, "")
+    .replace(/--md-font-family:\s*[^;"']+;?/g, "")
+    .replace(/--md-font-size:\s*[^;"']+;?/g, "")
+    .replace(/--blockquote-background:\s*[^;"']+;?/g, "")
+    .replace(/--md-accent-color:\s*[^;"']+;?/g, "")
+    .replace(/--md-container-bg:\s*[^;"']+;?/g, "")
+    .replace(/--foreground:\s*[^;"']+;?/g, "");
 }
 
 export function normalizeInlineCss(html: string, style: StyleConfig = DEFAULT_STYLE): string {
