@@ -728,8 +728,8 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
         await sleep(4000);
 
         console.log('[wechat] Waiting for "Next" button...');
-        await evaluate(session, `
-          (async function() {
+        const rectRes = await evaluate<any>(session, `
+            (async function() {
             const nextBtn = document.querySelector('.weui-desktop-dialog__ft .weui-desktop-btn_primary') || document.querySelector('.weui-desktop-dialog .weui-desktop-btn_primary');
             if (nextBtn) {
               console.log('[wechat] Clicking Next button');
@@ -755,20 +755,24 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
               }
 
               // 2. 尝试点击确认按钮
-                            const btns = Array.from(document.querySelectorAll('button, .weui-desktop-btn_primary, .weui-desktop-btn'));
-              const okBtn = btns.find(el => 
-                (el.textContent.includes('确认') || el.textContent.includes('确定') || el.textContent.includes('完成')) 
-                && el.offsetParent !== null
-              );
+              const okBtn = document.querySelector('.weui-desktop-dialog__ft .weui-desktop-btn_primary') || document.querySelector('.weui-desktop-dialog .weui-desktop-btn_primary');
               if (okBtn) {
-                console.log('[wechat] Clicking Confirm button');
-                okBtn.click();
-              } else {
-                console.error('[wechat] Confirm button NOT found in modal');
+                 const rect = okBtn.getBoundingClientRect();
+                 return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
               }
+              return null;
             })()
           `);
-          
+
+          if (rectRes) {
+             console.log('[wechat] Dispatching trusted mouse click to Cover Confirm button...');
+             await session.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: rectRes.x, y: rectRes.y, button: 'left', clickCount: 1 }, { sessionId: session.sessionId });
+             await sleep(100);
+             await session.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rectRes.x, y: rectRes.y, button: 'left', clickCount: 1 }, { sessionId: session.sessionId });
+             await sleep(3000);
+          } else {
+             console.error('[wechat] Confirm button NOT found in modal');
+          }
           console.log('[wechat] Cover upload flow completed.');
           await sleep(4000);
         } catch (e) {
