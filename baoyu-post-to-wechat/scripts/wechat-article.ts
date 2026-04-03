@@ -176,7 +176,7 @@ async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, con
   }
 
   console.log('[wechat] Selecting #output content...');
-  await cdp.send<{ result: { value: unknown } }>('Runtime.evaluate', {
+  const selectResult = await cdp.send<{ result: { value: unknown } }>('Runtime.evaluate', {
     expression: `
       (function() {
         const output = document.querySelector('#output') || document.body;
@@ -185,15 +185,32 @@ async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, con
         const selection = window.getSelection();
         selection.removeAllRanges();
         selection.addRange(range);
-        return true;
+        return { success: true, htmlLength: output.innerHTML.length };
       })()
     `,
     returnByValue: true,
   }, { sessionId });
+  console.log('[wechat] Content selected:', selectResult.result);
   await sleep(300);
 
-  console.log('[wechat] Copying content...');
-  await sendCopy(cdp, sessionId);
+  // 使用 document.execCommand('copy') 复制 HTML 格式内容
+  console.log('[wechat] Copying content using execCommand...');
+  const copyResult = await cdp.send<{ result: { value: boolean } }>('Runtime.evaluate', {
+    expression: `
+      (function() {
+        try {
+          const result = document.execCommand('copy');
+          console.log('[wechat] execCommand("copy") result:', result);
+          return result;
+        } catch(e) {
+          console.error('[wechat] execCommand("copy") error:', e);
+          return false;
+        }
+      })()
+    `,
+    returnByValue: true,
+  }, { sessionId });
+  console.log('[wechat] Copy result:', copyResult.result.value);
   await sleep(1000);
 
   console.log('[wechat] Closing HTML tab...');
@@ -202,9 +219,46 @@ async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, con
 
 
 async function pasteFromClipboardInEditor(session: ChromeSession): Promise<void> {
-  console.log('[wechat] Pasting content...');
-  await sendPaste(session.cdp, session.sessionId);
-  await sleep(1000);
+  console.log('[wechat] Pasting content into editor...');
+
+  // 聚焦编辑器
+  await evaluate(session, `
+    (function() {
+      const editor = document.querySelector('#ueditor_0 .mock-iframe-body .ProseMirror') || document.querySelector('.ProseMirror');
+      if (editor) {
+        editor.focus();
+        editor.click();
+      }
+    })()
+  `);
+  await sleep(300);
+
+  // 方法 1：尝试使用 document.execCommand('paste')
+  const execPasteResult = await evaluate<boolean>(session, `
+    (function() {
+      try {
+        const editor = document.querySelector('#ueditor_0 .mock-iframe-body .ProseMirror') || document.querySelector('.ProseMirror');
+        if (editor) {
+          editor.focus();
+          return document.execCommand('paste');
+        }
+        return false;
+      } catch(e) {
+        return false;
+      }
+    })()
+  `);
+  console.log('[wechat] execCommand("paste") result:', execPasteResult);
+  await sleep(500);
+
+  // 方法 2：如果 execCommand 失败，使用 CDP 发送 Ctrl+V
+  if (!execPasteResult) {
+    console.log('[wechat] Falling back to CDP key event...');
+    await session.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'v', code: 'KeyV', modifiers: 2, windowsVirtualKeyCode: 86 }, { sessionId: session.sessionId });
+    await sleep(50);
+    await session.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'v', code: 'KeyV', modifiers: 2, windowsVirtualKeyCode: 86 }, { sessionId: session.sessionId });
+    await sleep(1000);
+  }
 }
 
 async function parseMarkdownWithPlaceholders(
@@ -837,6 +891,16 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
       console.log('[wechat] Pasting into editor...');
       await pasteFromClipboardInEditor(session);
       await sleep(3000);
+
+      // 调试：检查粘贴后编辑器内容
+      const debugContent = await evaluate<string>(session, `
+        (function() {
+          const editor = document.querySelector('#ueditor_0 .mock-iframe-body .ProseMirror') || document.querySelector('.ProseMirror');
+          if (!editor) return 'ERROR: No editor found';
+          return 'innerHTML length: ' + editor.innerHTML.length + ' | innerText: ' + (editor.innerText?.slice(0, 50) || 'empty');
+        })()
+      `);
+      console.log('[wechat] Editor content after paste:', debugContent);
 
       const editorHasContent = await evaluate<boolean>(session, `
         (function() {
