@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """Feishu Card Server - Handles card button events and sends interactive cards."""
 
@@ -46,7 +46,7 @@ STATE_FILE_LOCK = threading.Lock()
 APP_ID = os.getenv("FEISHU_APP_ID", "cli_a930dedc42789cd1")
 APP_SECRET = os.getenv("FEISHU_APP_SECRET", "WOjERqoJ8OhIwIthMS3NAcJAxFDvXK2X")
 DEFAULT_RECEIVE_ID = os.getenv("FEISHU_RECEIVE_ID", "ou_2da8e0f846c19c8fabebd6c6d82a8d6d")
-WORKDIR = os.getenv("FEISHU_WORKDIR", r"C:\Users\Administrator\.openclaw\workspace-ips-maker\skills\self-media-auto")
+WORKDIR = os.getenv("FEISHU_WORKDIR", r"C:\Users\Administrator\.openclaw\skills\self-media-auto")
 STATE_FILE = WORKDIR + r"/.workflow_state.json"
 
 # ==================== 全局底层引擎组件 ====================
