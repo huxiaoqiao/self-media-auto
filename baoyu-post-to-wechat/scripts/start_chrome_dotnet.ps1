@@ -26,9 +26,9 @@ try {
     Write-Host "[ChromeLauncher] ERROR: $_"
 }
 
-Start-Sleep -Seconds 2
+Start-Sleep -Seconds 5
 
-$maxWait = 20
+$maxWait = 180
 $waited = 0
 $portOpen = $false
 
@@ -36,10 +36,21 @@ while ($waited -lt $maxWait -and -not $portOpen) {
     Start-Sleep -Milliseconds 500
     $waited++
     try {
-        $response = Invoke-WebRequest -Uri "http://localhost:$Port/json" -UseBasicParsing -TimeoutSec 1 -ErrorAction SilentlyContinue
-        if ($response.StatusCode -eq 200) {
-            $portOpen = $true
-            Write-Host "[ChromeLauncher] Debug port ready after $waited checks"
+        $tcpClient = New-Object System.Net.Sockets.TcpClient
+        $connect = $tcpClient.BeginConnect("localhost", $Port, $null, $null)
+        $wait_result = $connect.AsyncWaitHandle.WaitOne(1000, $false)
+        if ($wait_result) {
+            try {
+                $tcpClient.EndConnect($connect)
+                $tcpClient.Close()
+                $portOpen = $true
+                Write-Host "[ChromeLauncher] Debug port ready after $waited checks"
+                break
+            } catch {
+                $tcpClient.Close()
+            }
+        } else {
+            $tcpClient.Close()
         }
     } catch {
     }

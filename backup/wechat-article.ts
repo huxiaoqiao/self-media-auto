@@ -1,11 +1,13 @@
-﻿import fs from 'node:fs';
+import fs, { readFile, writeFile } from 'node:fs/promises';
+import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { setTimeout } from 'node:timers/promises';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 import { fileURLToPath } from 'node:url';
 import { launchChrome, tryConnectExisting, findExistingChromeDebugPort, getPageSession, waitForNewTab, clickElement, typeText, evaluate, sleep, getAccountProfileDir, maximizeChromeWindow, type ChromeSession, type CdpConnection, REMOTE_CDP_URL } from './cdp.ts';
-import { getTunnelUrl } from './remote-html-server.ts';
+import { startRemoteHtmlServer, stopRemoteHtmlServer, getTunnelUrl } from './remote-html-server.ts';
 import { loadWechatExtendConfig, resolveAccount } from './wechat-extend-config.ts';
 
 // 获取图片 tunnel URL - 优先使用外部设置�?IMAGE_TUNNEL_URL
@@ -138,110 +140,45 @@ async function sendPaste(cdp?: CdpConnection, sessionId?: string): Promise<void>
   }
 }
 
-async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, contentImages: ImageInfo[] = []): Promise<void> {
+async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, contentImages: ImageInfo[] = [], useRemoteServer = false): Promise<void> {
+  // 直接注入模式 - 不使用剪贴板
+  console.log('[wechat] 直接注入 HTML 内容模式...');
+  
+  // 读取 HTML 文件
   const absolutePath = path.isAbsolute(htmlFilePath) ? htmlFilePath : path.resolve(process.cwd(), htmlFilePath);
-  const fileUrl = `file://${absolutePath}`;
-
-  console.log(`[wechat] Opening HTML file in new tab: ${fileUrl}`);
-
-  const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: fileUrl });
-  const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
-
-  // 激活标签页，确保键盘事件能够正确作用
-  await cdp.send('Target.activateTarget', { targetId });
-
-  await cdp.send('Page.enable', {}, { sessionId });
-  await cdp.send('Runtime.enable', {}, { sessionId });
-  await sleep(2000);
-
-  if (contentImages.length > 0) {
-    console.log('[wechat] Replacing img tags with placeholders for browser paste...');
-    const replacements = contentImages.map(img => ({ placeholder: img.placeholder, localPath: img.localPath }));
-    await cdp.send<{ result: { value: unknown } }>('Runtime.evaluate', {
-      expression: `
-        (function() {
-          const replacements = ${JSON.stringify(replacements)};
-          for (const r of replacements) {
-            const imgs = document.querySelectorAll('img[src="' + r.placeholder + '"], img[data-local-path="' + r.localPath + '"]');
-            for (const img of imgs) {
-              const text = document.createTextNode(r.placeholder);
-              img.parentNode.replaceChild(text, img);
-            }
-          }
-          return true;
-        })()
-      `,
-      returnByValue: true,
-    }, { sessionId });
-    await sleep(500);
+  let htmlContent = await readFile(absolutePath, 'utf-8');
+  
+  // 提取 #output 中的内容
+  const outputMatch = htmlContent.match(/<div id="output">([\s\S]*?)<\/div>/);
+  let content = outputMatch ? outputMatch[1] : htmlContent;
+  
+  // 替换图片 URL
+  const tunnelUrl = getImageTunnelUrl();
+  if (tunnelUrl && contentImages.length > 0) {
+    console.log(`[wechat] 使用 tunnel ${tunnelUrl} 替换图片 URL`);
+    for (const img of contentImages) {
+      const imgFileName = path.basename(img.localPath);
+      content = content.split(img.placeholder).join(`${tunnelUrl}/${imgFileName}`);
+      content = content.split(img.localPath).join(`${tunnelUrl}/${imgFileName}`);
+    }
   }
-
-  console.log('[wechat] Selecting #output content...');
-  await cdp.send<{ result: { value: unknown } }>('Runtime.evaluate', {
-    expression: `
-      (function() {
-        const output = document.querySelector('#output') || document.body;
-        const range = document.createRange();
-        range.selectNodeContents(output);
-        const selection = window.getSelection();
-        selection.removeAllRanges();
-        selection.addRange(range);
-        return true;
-      })()
-    `,
-    returnByValue: true,
-  }, { sessionId });
-  console.log('[wechat] Content selected');
-  await sleep(300);
-
-  // 使用 CDP 发送 Ctrl+C 复制 HTML 格式内容
-  console.log('[wechat] Copying content using CDP key event...');
-  await sendCopy(cdp, sessionId);
-  await sleep(1000);
-
-  console.log('[wechat] Closing HTML tab...');
-  await cdp.send('Target.closeTarget', { targetId });
+  
+  // 保存修改后的 HTML �?SMB 共享目录
+  if (tunnelUrl) {
+    const smbShare = 'C:\Users\Administrator\smb-share';
+    const smbFilePath = path.join(smbShare, 'temp-article.remote.html');
+    await writeFile(smbFilePath, `<div id="output">${content}</div>`, 'utf-8');
+    console.log(`[wechat] HTML 已保存到 SMB 共享目录`);
+  }
+  
+  // 存储内容供后续注入使�?  (globalThis as any).__wechatHtmlContent = content;
+  console.log('[wechat] HTML 内容已准备，长度:', content.length);
 }
 
-
 async function pasteFromClipboardInEditor(session: ChromeSession): Promise<void> {
-  console.log('[wechat] Pasting content into editor...');
-
-  // 激活编辑器标签页，确保键盘事件能够正确作用
-  await session.cdp.send('Target.activateTarget', { targetId: session.targetId });
-  await sleep(300);
-
-  // 聚焦编辑器
-  await evaluate(session, `
-    (function() {
-      const editor = document.querySelector('#ueditor_0 .mock-iframe-body .ProseMirror') || document.querySelector('.ProseMirror');
-      if (editor) {
-        editor.focus();
-        editor.click();
-      }
-    })()
-  `);
-  await sleep(300);
-
-  // 使用 CDP 发送 Ctrl+V 粘贴 HTML 格式内容
-  console.log('[wechat] Pasting content using CDP key event...');
+  console.log('[wechat] Pasting content...');
   await sendPaste(session.cdp, session.sessionId);
   await sleep(1000);
-
-  // 调试：检查剪贴板内容
-  const clipboardDebug: any = await session.cdp.send('Runtime.evaluate', {
-    expression: `
-      (function() {
-        const types = [];
-        if (navigator.clipboard && navigator.clipboard.read) {
-          return 'Clipboard API available';
-        }
-        return 'Clipboard API not available';
-      })()
-    `,
-    returnByValue: true,
-  }, { sessionId: session.sessionId });
-  console.log('[wechat] Clipboard debug:', clipboardDebug.result.value);
 }
 
 async function parseMarkdownWithPlaceholders(
@@ -337,70 +274,28 @@ function parseHtmlMeta(htmlPath: string): { title: string; author: string; summa
 }
 
 async function selectAndReplacePlaceholder(session: ChromeSession, placeholder: string): Promise<boolean> {
-  // 调试：先看编辑器里所有 img 标签的 src
-  const debugImgs = await session.cdp.send('Runtime.evaluate', {
-    expression: `
-      (function() {
-        const editor = document.querySelector('.ProseMirror');
-        if (!editor) return 'NO_EDITOR';
-        const imgs = editor.querySelectorAll('img');
-        const srcs = [];
-        for (const img of imgs) {
-          srcs.push(img.src + ' || ' + img.getAttribute('src') + ' || ' + img.outerHTML.slice(0, 80));
-        }
-        return 'IMGS:' + srcs.join('|||');
-      })()
-    `,
-    returnByValue: true,
-  }, { sessionId: session.sessionId });
-  console.log('[DEBUG] Editor img scan:', (debugImgs.result.value || 'null').slice(0, 300));
-
-  // 方法1：HTML 注入模式下，图片是 <img src="XIMGPH_X"> 标签
-  const imgResult = await session.cdp.send<{ result: { value: boolean } }>('Runtime.evaluate', {
+  const result = await session.cdp.send<{ result: { value: boolean } }>('Runtime.evaluate', {
     expression: `
       (function() {
         const editor = document.querySelector('.ProseMirror');
         if (!editor) return false;
-        const placeholder = ${JSON.stringify(placeholder)};
-        // 查找 img[src="XIMGPH_X"]
-        const imgs = editor.querySelectorAll('img[src="' + placeholder + '"]');
-        if (imgs.length > 0) {
-          const img = imgs[0];
-          img.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          // 选中整个 img 节点
-          const range = document.createRange();
-          range.selectNode(img);
-          const sel = window.getSelection();
-          sel.removeAllRanges();
-          sel.addRange(range);
-          return true;
-        }
-        return false;
-      })()
-    `,
-    returnByValue: true,
-  }, { sessionId: session.sessionId });
 
-  if (imgResult.result.value) return true;
-
-  // 方法2：文本节点中的占位符
-  const textResult = await session.cdp.send<{ result: { value: boolean } }>('Runtime.evaluate', {
-    expression: `
-      (function() {
-        const editor = document.querySelector('.ProseMirror');
-        if (!editor) return false;
         const placeholder = ${JSON.stringify(placeholder)};
         const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null, false);
         let node;
+
         while ((node = walker.nextNode())) {
           const text = node.textContent || '';
           let searchStart = 0;
           let idx;
+          // Search for exact match (not prefix of longer placeholder like XIMGPH_1 in XIMGPH_10)
           while ((idx = text.indexOf(placeholder, searchStart)) !== -1) {
             const afterIdx = idx + placeholder.length;
             const charAfter = text[afterIdx];
+            // Exact match if next char is not a digit
             if (charAfter === undefined || !/\\d/.test(charAfter)) {
               node.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
               const range = document.createRange();
               range.setStart(node, idx);
               range.setEnd(node, idx + placeholder.length);
@@ -418,7 +313,7 @@ async function selectAndReplacePlaceholder(session: ChromeSession, placeholder: 
     returnByValue: true,
   }, { sessionId: session.sessionId });
 
-  return textResult.result.value;
+  return result.result.value;
 }
 
 async function pressDeleteKey(session: ChromeSession): Promise<void> {
@@ -544,7 +439,7 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
       console.log('[cdp] 远程 CDP 连接成功');
       cdp = remoteCdp;
     } else {
-      throw new Error('[cdp] 远程连接失败，请检查 Cloudflare Tunnel 或 Windows Chrome 远程调试是否正常');
+      throw new Error('[cdp] 远程连接失败，请检�?Cloudflare Tunnel �?Windows Chrome 远程调试是否正常');
     }
   } else {
     // Try connecting to existing Chrome: explicit port > auto-detect > launch new
@@ -557,7 +452,6 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
       } else {
         console.log(`[cdp] Port ${portToTry} not available, launching new Chrome...`);
         const launched = await launchChrome(WECHAT_URL, profileDir);
-        if (!launched.cdp) throw new Error('Chrome launch failed: CDP connection is null');
         cdp = launched.cdp;
         chrome = launched.chrome;
         await maximizeChromeWindow(cdp);
@@ -569,7 +463,6 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
       }
     } else {
       const launched = await launchChrome(WECHAT_URL, profileDir);
-      if (!launched.cdp) throw new Error('Chrome launch failed: CDP connection is null');
       cdp = launched.cdp;
       chrome = launched.chrome;
       await maximizeChromeWindow(cdp);
@@ -684,9 +577,9 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
             
             // Notify user via Feishu - OpenClaw will detect [FEISHU_IMAGE_REQUIRED] marker
             console.log('\n🔔 [FEISHU_IMAGE_REQUIRED] ' + qrPath);
-            console.log('\n⚠️ [LOGIN_REQUIRED] 微信公众号需要登录');
+            console.log('\n⚠️ [LOGIN_REQUIRED] 微信公众号需要登�?);
             console.log('📸 二维码截图已保存，请查收飞书推送的图片');
-            console.log('\n\xe2\x8f\xb3 \xe7\xad\x89\xe5\xbe\x85\xe7\x94\xa8\xe6\x88\xb7\xe6\x89\xab\xe7\xa0\x81\xe7\x99\xbb\xe5\xbd\x95...\xef\xbc\x88\xe6\x9c\x80\xe9\x95\xbf\xe7\xad\x89\xe5\xbe\x85 5 \xe5\x88\x86\xe9\x92\x9f\xef\xbc\x89\n');
+            console.log('\n�?等待用户扫码登录�?..（最长等�?5 分钟）\n');
           }
         }
       } catch (e) {
@@ -762,98 +655,133 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
       }
     }
 
-    // --- 封面图上传：基于浏览实测结构 (官方标准路径) ---
+    // --- 封面图上传：支持远程模式 ---
     if (options.cover && fs.existsSync(options.cover)) {
       console.log(`[wechat] Starting cover upload for: ${options.cover}`);
-      try {
-        // 1. 触发封面区域，激活微信图片库对话框
-        await evaluate(session, `document.querySelector('.js_imagedialog')?.click()`);
-        await sleep(1500); // 等待模态框动画完成
+      
+      const imageTunnelUrl = getImageTunnelUrl();
+      let coverPath = options.cover;
+      
+      // 远程模式下：通过 HTTP URL �?Chrome 下载图片到本�?      if (imageTunnelUrl && REMOTE_CDP_URL) {
+        const coverFileName = path.basename(options.cover);
+        const remoteUrl = imageTunnelUrl + '/' + coverFileName;
+        const downloadDir = 'C:\\\\Users\\\\Public\\\\Documents';
+        const windowsLocalPath = downloadDir + '\\\\' + coverFileName;
+        
+        console.log(`[wechat] 远程模式: 下载封面图到本地`);
+        console.log(`[wechat] 远程 URL: ${remoteUrl}`);
+        console.log(`[wechat] 本地路径: ${windowsLocalPath}`);
+        
+        // 方法：通过 PowerShell 直接下载，不使用 Page.navigate
+        try {
+          const psScript = `Invoke-WebRequest -Uri '${remoteUrl}' -OutFile '${windowsLocalPath}'`;
+          console.log('[wechat] 执行 PowerShell 下载...');
+          
+          // 使用 cmd /c start 执行 PowerShell（后台运行，不阻塞）
+          await evaluate<string>(session, `
+            (function() {
+              const { exec } = require('child_process');
+              // 使用 PowerShell 直接下载，不通过 Chrome
+              exec('powershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri \\'${remoteUrl}\\' -OutFile \\'${windowsLocalPath}\\'"', {windowsHide: true}, (err, stdout, stderr) => {
+                if (err) console.error('Download error:', err);
+                else console.log('Download completed');
+              });
+              return 'PowerShell download started';
+            })()
+          `);
+          
+          // 等待下载完成
+          await sleep(5000);
+          
+          // 检查文件是否存�?          const fileCheck = await evaluate<string>(session, `
+            (function() {
+              const fs = require('fs');
+              const path = '${windowsLocalPath}';
+              if (fs.existsSync(path)) {
+                return 'EXISTS: ' + fs.statSync(path).size + ' bytes';
+              }
+              return 'FILE_NOT_FOUND';
+            })()
+          `);
+          console.log('[wechat] 文件检�? ' + JSON.stringify(fileCheck));
+          
+          if (fileCheck.result?.value?.includes('EXISTS')) {
+            coverPath = windowsLocalPath;
+            console.log('[wechat] 封面图下载成�? ' + windowsLocalPath);
+          } else {
+            console.log('[wechat] 封面图下载失败，使用本地路径');
+            coverPath = options.cover;
+          }
+        } catch(e) {
+          console.log('[wechat] PowerShell 下载失败: ' + e.message);
+          coverPath = options.cover;
+        }
+      } else {
+        // 本地模式：使用原有逻辑
+        try {
+          await evaluate(session, `document.querySelector('.js_imagedialog')?.click()`);
+          await sleep(1500);
+          
+          const docRes: any = await cdp.send('DOM.getDocument', { depth: -1 }, { sessionId: session.sessionId });
+          const rootNodeId = docRes.root.nodeId;
+          
+          const queryRes: any = await cdp.send('DOM.querySelector', {
+              nodeId: rootNodeId,
+              selector: '.weui-desktop-dialog input[type="file"]'
+          }, { sessionId: session.sessionId });
 
-        // 2. 利用 CDP 将文件直接注入到模态框的隐藏 input 中
-        const docRes: any = await cdp.send('DOM.getDocument', { depth: -1 }, { sessionId: session.sessionId });
-        const rootNodeId = docRes.root.nodeId;
+          const nodeId = queryRes.nodeId;
+          if (!nodeId) throw new Error('Could not find file input node in modal');
 
-        const queryRes: any = await cdp.send('DOM.querySelector', {
-            nodeId: rootNodeId,
-            selector: '.weui-desktop-dialog input[type="file"]'
-        }, { sessionId: session.sessionId });
+          await cdp.send('DOM.setFileInputFiles', {
+              files: [coverPath],
+              nodeId: nodeId
+          }, { sessionId: session.sessionId });
+          
+          console.log('[wechat] Native file injection to modal successful.');
+          await sleep(3000);
 
-        const nodeId = queryRes.nodeId;
-        if (!nodeId) throw new Error('Could not find file input node in modal');
+          console.log('[wechat] Waiting for "Next" button...');
+          await sleep(4000); 
+          await evaluate(session, `
+            (async function() {
+              const btns = Array.from(document.querySelectorAll('.weui-desktop-dialog__ft .weui-desktop-btn_primary'));
+              const nextBtn = btns.find(el => el.textContent.includes('下一�?));
+              if (nextBtn) nextBtn.click();
+            })()
+          `);
+          
+          await sleep(3000);
 
-        await cdp.send('DOM.setFileInputFiles', {
-            files: [options.cover],
-            nodeId: nodeId
-        }, { sessionId: session.sessionId });
-
-        console.log('[wechat] Native file injection to modal successful.');
-        await sleep(3000); // 等待微信上传并生成预览
-
-        // 3. 第一阶段：物理点击"下一步"
-        console.log('[wechat] Waiting for "Next" button...');
-        await sleep(4000);
-        await evaluate(session, `
-          (async function() {
-            const btns = Array.from(document.querySelectorAll('.weui-desktop-dialog__ft .weui-desktop-btn_primary'));
-            const nextBtn = btns.find(el => el.textContent.includes('下一步'));
-            if (nextBtn) {
-               nextBtn.click();
-            }
-          })()
-        `);
-
-        await sleep(3000);
-
-        // 4. 第二阶段：选择 2.35:1 并点击"确定"
-        console.log('[wechat] Selecting 2.35:1 ratio and confirming...');
-        await evaluate(session, `
-          (async function() {
-            // 1. 寻找 2.35:1 选项
-            const items = Array.from(document.querySelectorAll('.weui-desktop-image-preview__selectable_item_v2, .weui-desktop-image-preview__item, .weui-desktop-image-preview__selectable_item'));
-            const ratioBtn = items.find(el => el.textContent.includes('2.35:1'));
-            if (ratioBtn) {
-               ratioBtn.click();
-               await new Promise(r => setTimeout(r, 1500));
-            }
-
-            // 2. 寻找最终的"确认"或"确定"按钮
-            const btns = Array.from(document.querySelectorAll('.weui-desktop-dialog__ft .weui-desktop-btn_primary'));
-            const okBtn = btns.find(el => el.textContent.includes('确认') || el.textContent.includes('确定') || el.textContent.includes('完成'));
-            if (okBtn) {
-               okBtn.click();
-            }
-          })()
-        `);
-
-        console.log('[wechat] Cover upload flow completed.');
-        await sleep(4000); // 确保弹窗彻底消失
-      } catch (e) {
-        console.error(`[wechat] Cover upload failed: ${e}.`);
+          console.log('[wechat] Selecting 2.35:1 ratio and confirming...');
+          await evaluate(session, `
+            (async function() {
+              const items = Array.from(document.querySelectorAll('.weui-desktop-image-preview__selectable_item_v2, .weui-desktop-image-preview__item, .weui-desktop-image-preview__selectable_item'));
+              const ratioBtn = items.find(el => el.textContent.includes('2.35:1'));
+              if (ratioBtn) {
+                 ratioBtn.click();
+                 await new Promise(r => setTimeout(r, 1500));
+              }
+              const btns = Array.from(document.querySelectorAll('.weui-desktop-dialog__ft .weui-desktop-btn_primary'));
+              const okBtn = btns.find(el => el.textContent.includes('确认') || el.textContent.includes('确定') || el.textContent.includes('完成'));
+              if (okBtn) okBtn.click();
+            })()
+          `);
+          
+          console.log('[wechat] Cover upload flow completed.');
+          await sleep(4000);
+        } catch (e) {
+          console.error(`[wechat] Cover upload failed: ${e}.`);
+        }
       }
     }
 
     // --- 确保返回编辑器上下文 ---
     console.log('[wechat] Re-focusing editor...');
-    await sleep(3000);
-    // 等待 ProseMirror 编辑器出现（最多等 15 秒）
-    const editorSelector = '#ueditor_0 .mock-iframe-body .ProseMirror, .ProseMirror';
-    let editorFound = false;
-    for (let i = 0; i < 15; i++) {
-      const found = await evaluate<boolean>(session, `
-        !!(document.querySelector('#ueditor_0 .mock-iframe-body .ProseMirror') || document.querySelector('.ProseMirror'))
-      `);
-      if (found) { editorFound = true; break; }
-      await sleep(1000);
-    }
-    if (!editorFound) {
-      console.warn('[wechat] ProseMirror editor not found after waiting, proceeding anyway...');
-    } else {
-      console.log('[wechat] Editor found, focusing...');
-    }
+    await sleep(1000);
     await evaluate(session, `
         (function() {
-           const el = document.querySelector('#ueditor_0 .mock-iframe-body .ProseMirror') || document.querySelector('.ProseMirror');
+           const el = document.querySelector('.ProseMirror');
            if (el) {
               el.scrollIntoView({ behavior: 'smooth', block: 'center' });
               el.focus();
@@ -863,27 +791,91 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
     await sleep(500);
 
     console.log('[wechat] Clicking on editor...');
-    await clickElement(session, editorSelector);
+    await clickElement(session, '.ProseMirror');
     await sleep(1000);
 
+    console.log('[wechat] Ensuring editor focus...');
+    await clickElement(session, '.ProseMirror');
+    await sleep(500);
 
     if (effectiveHtmlFile && fs.existsSync(effectiveHtmlFile)) {
       console.log(`[wechat] Copying HTML content from: ${effectiveHtmlFile}`);
-      await copyHtmlFromBrowser(cdp, effectiveHtmlFile, contentImages);
-      await sleep(500);
-      console.log('[wechat] Pasting into editor...');
-      await pasteFromClipboardInEditor(session);
-      await sleep(3000);
+      // 获取图片 tunnel URL - 优先使用外部设置�?IMAGE_TUNNEL_URL
+function getImageTunnelUrl(): string | null {
+  // 优先使用 IMAGE_TUNNEL_URL 环境变量
+  if (process.env.IMAGE_TUNNEL_URL) {
+    console.log(`[tunnel] 使用外部 IMAGE_TUNNEL_URL: ${process.env.IMAGE_TUNNEL_URL}`);
+    return process.env.IMAGE_TUNNEL_URL;
+  }
+  // 否则使用内部启动�?tunnel
+  return getTunnelUrl();
+}
 
-      // 调试：检查粘贴后编辑器内容
-      const debugContent = await evaluate<string>(session, `
-        (function() {
-          const editor = document.querySelector('#ueditor_0 .mock-iframe-body .ProseMirror') || document.querySelector('.ProseMirror');
-          if (!editor) return 'ERROR: No editor found';
-          return 'innerHTML length: ' + editor.innerHTML.length + ' | innerText: ' + (editor.innerText?.slice(0, 50) || 'empty');
-        })()
+// 启动图片 tunnel 的简单函�?async function startImageTunnelSimple(imagesDir: string): Promise<string> {
+  // 如果 IMAGE_TUNNEL_URL 已设置，直接返回
+  if (process.env.IMAGE_TUNNEL_URL) {
+    console.log(`[tunnel] 使用已有�?IMAGE_TUNNEL_URL: ${process.env.IMAGE_TUNNEL_URL}`);
+    return process.env.IMAGE_TUNNEL_URL;
+  }
+  
+  // 否则启动新的 tunnel
+  const port = 8092;
+  console.log(`[tunnel] 启动图片 HTTP 服务�? ${imagesDir}`);
+  
+  const httpServer = spawn('python3', ['-m', 'http.server', String(port)], {
+    cwd: imagesDir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  
+  await new Promise(r => setTimeout(r, 2000));
+  
+  const tunnel = spawn('lt', ['--port', String(port), '--subdomain', `wechat-img-${process.pid}`], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  
+  let tunnelUrl: string | null = null;
+  tunnel.stdout?.on('data', (data) => {
+    const output = data.toString();
+    const match = output.match(/url is:\s*(https?:\/\/[^\s]+)/);
+    if (match && !tunnelUrl) {
+      tunnelUrl = match[1]!;
+      console.log(`[tunnel] 图片服务�? ${tunnelUrl}`);
+    }
+  });
+  
+  const startTime = Date.now();
+  while (!tunnelUrl && Date.now() - startTime < 15000) {
+    await new Promise(r => setTimeout(r, 500));
+  }
+  
+  if (!tunnelUrl) throw new Error('[tunnel] 启动超时');
+  return tunnelUrl;
+}
+
+// 在远程模式下使用 HTTP 服务�?    const useRemoteServer = !!REMOTE_CDP_URL;
+    if (useRemoteServer && contentImages.length > 0) {
+      console.log('[wechat] 远程模式: 准备启动图片服务�?..');
+      await startImageTunnelSimple(path.dirname(contentImages[0].localPath));
+    }
+    await copyHtmlFromBrowser(cdp, effectiveHtmlFile, contentImages, useRemoteServer);
+    
+    // 直接注入 HTML 内容到编辑器（不依赖剪贴板）
+    await sleep(1000);
+    const injectedContent = (globalThis as any).__wechatHtmlContent;
+    if (injectedContent) {
+      console.log('[wechat] 直接注入 HTML 内容到编辑器...');
+      await evaluate(session, `
+        (function(c) {
+          const prose = document.querySelector('#ueditor_0 .mock-iframe-body .ProseMirror') || document.querySelector('.ProseMirror');
+          if (!prose) return 'ProseMirror not found';
+          prose.innerHTML = c;
+          prose.dispatchEvent(new Event('input', { bubbles: true }));
+          prose.dispatchEvent(new Event('change', { bubbles: true }));
+          return 'OK: ' + prose.innerHTML.length;
+        })(${JSON.stringify(injectedContent)})
       `);
-      console.log('[wechat] Editor content after paste:', debugContent);
+      await sleep(2000);
+    }
 
       const editorHasContent = await evaluate<boolean>(session, `
         (function() {
@@ -896,7 +888,7 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
       if (editorHasContent) {
         console.log('[wechat] Body content verified OK.');
       } else {
-        console.warn('[wechat] Body content verification failed: editor appears empty after paste.');
+        console.warn('[wechat] Body content verification failed: editor appears empty after injection.');
       }
 
       if (contentImages.length > 0) {
@@ -940,9 +932,20 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
         }
       }
 
-      console.log('[wechat] Typing content...');
-      await typeText(session, content);
-      await sleep(1000);
+      console.log('[wechat] Injecting content via innerHTML...');
+      // 使用 innerHTML 直接注入内容（针�?WeChat 编辑器的 mock-iframe 结构�?      const injectedContent = JSON.stringify(content);
+      await evaluate(session, `
+        (function(c) {
+          // WeChat 编辑器使�?mock-iframe 结构
+          const prose = document.querySelector('#ueditor_0 .mock-iframe-body .ProseMirror') || document.querySelector('.ProseMirror');
+          if (!prose) return 'ProseMirror not found';
+          prose.innerHTML = c;
+          prose.dispatchEvent(new Event('input', { bubbles: true }));
+          prose.dispatchEvent(new Event('change', { bubbles: true }));
+          return 'OK: ' + prose.innerHTML.length;
+        })(${injectedContent})
+      `);
+      await sleep(2000);
 
       const editorHasContent = await evaluate<boolean>(session, `
         (function() {
@@ -955,9 +958,10 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
       if (editorHasContent) {
         console.log('[wechat] Body content verified OK.');
       } else {
-        console.warn('[wechat] Body content verification failed: editor appears empty after typing.');
+        console.warn('[wechat] Body content verification failed: editor appears empty after injection.');
       }
     }
+
     // --- 摘要填写 ---
     if (effectiveSummary) {
       console.log(`[wechat] Filling summary (after content paste): ${effectiveSummary.substring(0, 100)}...`);
