@@ -1286,6 +1286,14 @@ def inject_inline_styles(html: str, theme: dict, skip_wrapper: bool = False) -> 
         )
 
     # === 8. 处理 wrapper（整体背景色，用于 dark/retro 等主题）===
+    # IDEMPOTENCY: 如果 html 已经有类似的 wrapper，先剥离它，防止嵌套 padding
+    if not skip_wrapper:
+        wrapper_pattern = r'^<section style="[^"]*background-color:[^"]*padding:16px[^"]*"[^>]*>(.*)</section>$'
+        match = re.match(wrapper_pattern, html.strip(), re.DOTALL)
+        if match:
+            # 剥离一层
+            html = match.group(1).strip()
+
     if "wrapper" in style_map and not skip_wrapper:
         html = f'<section style="{style_map["wrapper"]}">{html}</section>'
 
@@ -1779,7 +1787,25 @@ def main():
 
         print(f"\n收到确认：开始使用主题 '{selected_theme}' 生成最终 HTML。")
         theme = load_theme(selected_theme)
-        # 不 return，让代码继续向下执行单主题模式，覆盖输出真正的排版 html！
+        
+        # ── 执行单主题生成并退出 ──
+        html = inject_inline_styles(html, theme)
+        if footnote_html:
+            footnote_html = inject_inline_styles(footnote_html, theme, skip_wrapper=True)
+            
+        html = convert_image_captions(html)
+        if footnote_html:
+            html += "\n" + footnote_html
+            
+        target_article_path.parent.mkdir(parents=True, exist_ok=True)
+        target_article_path.write_text(html, encoding="utf-8")
+        
+        preview_path = output_dir / "preview.html"
+        generate_preview(html, footnote_html, theme, title, word_count, preview_path)
+        
+        print(f"\n最终成品已生成: {target_article_path}")
+        print("Gallery 任务完成，不自动打开预览页面。")
+        return # 直接退出，不再执行 main 后面的 open 逻辑
 
     # ── 单主题模式 ──
     html = inject_inline_styles(html, theme)
@@ -1802,7 +1828,8 @@ def main():
     generate_preview(html, footnote_html, theme, title, word_count, preview_path)
     print(f"\n排版成品: {preview_path}")
 
-    if AUTO_OPEN and not args.no_open:
+    print(f"DEBUG: AUTO_OPEN={AUTO_OPEN}, no_open={args.no_open}, gallery={args.gallery}")
+    if AUTO_OPEN and not args.no_open and not args.gallery:
         webbrowser.open(f"file://{preview_path}")
         print("已在浏览器中打开预览")
 

@@ -157,9 +157,10 @@ export async function launchChrome(
 
   const { spawn, spawnSync } = await import('node:child_process');
   // 用 PowerShell .NET Process API 启动 Chrome（确保窗口在用户当前桌面可见）
-  // 关键：detached=true + stdio=ignore，让 PowerShell 在用户桌面会话独立运行
+  // 注意：detached=true + stdio=ignore 会导致 Chrome 运行在隔离桌面会话，CDP 无法连接
+  // 因此改用 stdio=inherit + detached=false，让 Chrome 在同一桌面会话运行
   const launchScript = path.join(path.dirname(fileURLToPath(import.meta.url)), 'start_chrome_dotnet.ps1');
-  console.log(`[cdp] Launching Chrome via .NET Process API (detached)...`);
+  console.log(`[cdp] Launching Chrome via .NET Process API...`);
   spawn('powershell', [
     '-ExecutionPolicy', 'Bypass',
     '-File', launchScript,
@@ -168,15 +169,15 @@ export async function launchChrome(
     '-Port', String(port),
     '-Profile', profile,
   ], {
-    stdio: 'ignore',
-    detached: true,
+    stdio: 'inherit',
+    detached: false,
     windowsHide: false,
   });
 
   // 等待 Chrome 窗口完全出现
   await sleep(6000);
 
-  // 强制将 Chrome 窗口推到前台（detached 让它在用户会话运行）
+  // 强制将 Chrome 窗口推到前台
   const scriptPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'activate_chrome.ps1');
   try {
     spawn('powershell', ['-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
