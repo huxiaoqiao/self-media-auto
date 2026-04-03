@@ -190,27 +190,12 @@ async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, con
     `,
     returnByValue: true,
   }, { sessionId });
-  console.log('[wechat] Content selected:', selectResult.result);
+  console.log('[wechat] Content selected');
   await sleep(300);
 
-  // 使用 document.execCommand('copy') 复制 HTML 格式内容
-  console.log('[wechat] Copying content using execCommand...');
-  const copyResult = await cdp.send<{ result: { value: boolean } }>('Runtime.evaluate', {
-    expression: `
-      (function() {
-        try {
-          const result = document.execCommand('copy');
-          console.log('[wechat] execCommand("copy") result:', result);
-          return result;
-        } catch(e) {
-          console.error('[wechat] execCommand("copy") error:', e);
-          return false;
-        }
-      })()
-    `,
-    returnByValue: true,
-  }, { sessionId });
-  console.log('[wechat] Copy result:', copyResult.result.value);
+  // 使用 CDP 发送 Ctrl+C 复制 HTML 格式内容
+  console.log('[wechat] Copying content using CDP key event...');
+  await sendCopy(cdp, sessionId);
   await sleep(1000);
 
   console.log('[wechat] Closing HTML tab...');
@@ -233,32 +218,10 @@ async function pasteFromClipboardInEditor(session: ChromeSession): Promise<void>
   `);
   await sleep(300);
 
-  // 方法 1：尝试使用 document.execCommand('paste')
-  const execPasteResult = await evaluate<boolean>(session, `
-    (function() {
-      try {
-        const editor = document.querySelector('#ueditor_0 .mock-iframe-body .ProseMirror') || document.querySelector('.ProseMirror');
-        if (editor) {
-          editor.focus();
-          return document.execCommand('paste');
-        }
-        return false;
-      } catch(e) {
-        return false;
-      }
-    })()
-  `);
-  console.log('[wechat] execCommand("paste") result:', execPasteResult);
-  await sleep(500);
-
-  // 方法 2：如果 execCommand 失败，使用 CDP 发送 Ctrl+V
-  if (!execPasteResult) {
-    console.log('[wechat] Falling back to CDP key event...');
-    await session.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'v', code: 'KeyV', modifiers: 2, windowsVirtualKeyCode: 86 }, { sessionId: session.sessionId });
-    await sleep(50);
-    await session.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'v', code: 'KeyV', modifiers: 2, windowsVirtualKeyCode: 86 }, { sessionId: session.sessionId });
-    await sleep(1000);
-  }
+  // 使用 CDP 发送 Ctrl+V 粘贴 HTML 格式内容
+  console.log('[wechat] Pasting content using CDP key event...');
+  await sendPaste(session.cdp, session.sessionId);
+  await sleep(1000);
 }
 
 async function parseMarkdownWithPlaceholders(
