@@ -38,7 +38,7 @@ def get_token():
         "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
         "-H", "Content-Type: application/json",
         "-d", json.dumps({"app_id": APP_ID, "app_secret": APP_SECRET})
-    ], capture_output=True, text=True)
+    ], capture_output=True, encoding="utf-8", errors="replace")
     data = json.loads(result.stdout)
     token = data.get("tenant_access_token", "")
     if not token:
@@ -82,7 +82,7 @@ def send_card(token: str, receive_id: str, card: dict) -> bool:
         "-H", f"Authorization: Bearer {token}",
         "-H", "Content-Type: application/json",
         "-d", json.dumps(payload)
-    ], capture_output=True, text=True)
+    ], capture_output=True, encoding="utf-8", errors="replace")
 
     data = json.loads(result.stdout)
     if data.get("code") == 0:

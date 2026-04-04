@@ -21,6 +21,9 @@ from datetime import datetime
 from typing import Optional
 from dotenv import load_dotenv
 import requests
+import certifi
+# 设置 requests 库的 CA 证书，防止 TLS 报错
+os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 import re
 
 # ==================== 统一日志配置 ====================
@@ -38,7 +41,7 @@ except ImportError:
 
 # ==================== 飞书卡片导入 ====================
 try:
-    from send_feishu_card import build_url_preview_card, send_card, get_token
+    from send_feishu_card import build_url_preview_card, build_rewrite_card, send_card, get_token
 except ImportError:
     build_url_preview_card = None
     send_card = None
@@ -188,51 +191,201 @@ class SelfMediaController:
         print("✨ 您现在可以运行 'python workflow_controller.py discovery' 开始使用了。")
         logger.info("[SETUP] Configuration saved successfully")
 
+    def _generate_insight(self, title, author, score, raw_content):
+        """
+        调用 LLM 生成选题的一句话解读（用于发给用户确认是否值得改写）。
+        返回解读文本字符串。
+        """
+        import urllib.request
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+        model_id = os.environ.get("LLM_MODEL_ID", "deepseek-chat")
+
+        if not raw_content or not api_key or "your_api_key" in api_key:
+            return f"🔥 **选题：** {title}\n\n热度指数：{score}\n\n请确认是否值得投入 IP 化改写。"
+
+        prompt = (
+            f"你是一个资深自媒体爆款策划顾问。请分析以下选题的爆款潜力：\n\n"
+            f"选题标题：{title}\n原文作者：{author}\n热度指数：{score}\n\n"
+            f"原文内容摘要：{raw_content[:1000]}\n\n"
+            f"请从以下四个维度分析（每条不超过50字）：\n"
+            f"1. 【核心情绪】核心情绪是什么？为何能引发传播？\n"
+            f"2. 【IP切入点】从这个IP应该从哪个差异化角度切入？\n"
+            f"3. 【可借鉴点】哪些爆点元素值得借鉴？\n"
+            f"4. 【风险提示】有无敏感话题风险？\n\n"
+            f"直接输出分析结论，不要车轱辘话。"
+        )
+
+        try:
+            req_data = json.dumps({
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.7,
+                "max_tokens": 600
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base_url.rstrip('/')}/chat/completions",
+                data=req_data,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+                insight_text = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if insight_text:
+                    return insight_text.strip()
+        except Exception as e:
+            logger.warning(f"[INSIGHT] LLM 调用失败: {e}")
+
+        return f"🔥 **选题：** {title}\n\n热度指数：{score}\n\n请确认是否值得投入 IP 化改写。"
+
     def run_from_article(self, url_or_text):
         """
-        [v1.1] 快捷入口：从指定文章链接开始创作
+        [v1.2] 快捷入口：从指定文章链接开始创作
+        流程：提取内容 → 生成解读 → 发送选题确认卡（等待用户点"开始改写"）→ 才执行改写
         """
         import re
         logger.info("启动 from-article | url=%s", str(url_or_text)[:60])
         match = re.search(r'https?://[^\s]+', url_or_text)
         url = match.group(0) if match else url_or_text
-        
+
         print(f"🚀 启动定向创作模式 (From Article)... 原始输入中探测到的 URL: {url}")
         logger.info("[SETUP] Saving .env configuration")
         state = self.load_state()
+
+        # 1. 提取文章内容
+        raw_content = self._extract_article_content(url)
+
+        # 2. 从内容中提取标题（尝试从 content 开头获取）
+        article_title = "定向通过URL输入的素材"
+        article_author = "外部链接"
+        try:
+            lines = raw_content.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line and len(line) > 5:
+                    article_title = line[:80]
+                    break
+            # 简单提取作者（如果有 "作者：" 这样的行）
+            for line in lines[:20]:
+                m = re.search(r'作者[：:]\s*(.+)', line)
+                if m:
+                    article_author = m.group(1).strip()
+                    break
+        except Exception:
+            pass
+
         selected = {
-            "id": url, 
-            "source": "公众号", 
-            "title": "定向通过URL输入的素材", 
-            "author": "外部链接",
+            "id": url,
+            "source": "公众号",
+            "title": article_title,
+            "author": article_author,
             "score": 9999
         }
         state['last_candidates'] = [selected]
+
+        # 3. 生成选题解读
+        print(f"🤖 正在生成选题解读...")
+        insight_text = self._generate_insight(article_title, article_author, "外部链接", raw_content)
+
+        # 4. 保存 topic_context（供后续 run_repurpose 使用）
+        state['topic_context'] = {
+            "id": url,
+            "title": article_title,
+            "author": article_author,
+            "source": "公众号",
+            "score": 9999
+        }
+        state['current_step'] = 'waiting_for_rewrite_confirm'
         self.save_state(state)
-        self.run_repurpose(url)
+
+        # 5. 发送选题解读确认卡
+        topic_id_str = url  # 用 URL 作为 topic_id
+        if build_rewrite_card and send_card and get_token:
+            try:
+                token = get_token()
+                card = build_rewrite_card(article_title, insight_text, topic_id_str)
+                send_card(token, os.getenv("FEISHU_RECEIVE_ID", "ou_2da8e0f846c19c8fabebd6c6d82a8d6d"), card)
+                print("✅ 选题解读卡片已发送，请确认是否改写")
+            except Exception as e:
+                logger.warning(f"[FROM_ARTICLE] 卡片发送失败: {e}")
+                print(f"⚠️ 卡片发送失败: {e}")
+
+        print(f"\n📝 选题：{article_title}")
+        print(f"💡 解读：{insight_text[:100]}...")
+        print(f"\n⏳ 等待确认后开始改写...（请在飞书中点击「✍️ 开始改写」）")
+        logger.info("[FROM_ARTICLE] 流程暂停，等待用户确认改写")
 
     def run_from_video(self, url_or_text):
         """
-        [v1.1] 快捷入口：从指定视频链接开始创作
+        [v1.2] 快捷入口：从指定视频链接开始创作
+        流程：提取内容 → 生成解读 → 发送选题确认卡（等待用户点"开始改写"）→ 才执行改写
         """
         import re
         logger.info("启动 from-video | url=%s", str(url_or_text)[:60])
         match = re.search(r'https?://[^\s]+', url_or_text)
         url = match.group(0) if match else url_or_text
-        
+
         print(f"🚀 启动定向视频创作模式 (From Video)... 原始输入中探测到的 URL: {url}")
         logger.info("[SETUP] Configuration saved successfully")
         state = self.load_state()
+
+        # 1. 提取视频内容（ASR 转录）
+        raw_content = self._extract_article_content(url)
+
+        # 2. 从 URL 推断视频标题
+        video_title = f"视频素材: {url[:60]}"
+        video_author = "视频平台"
+        try:
+            lines = raw_content.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line and len(line) > 5:
+                    video_title = line[:80]
+                    break
+        except Exception:
+            pass
+
         selected = {
-            "id": url, 
-            "source": "视频链接", 
-            "title": "定向输入的视频素材", 
-            "author": "视频平台",
+            "id": url,
+            "source": "视频链接",
+            "title": video_title,
+            "author": video_author,
             "score": 9999
         }
         state['last_candidates'] = [selected]
+
+        # 3. 生成选题解读
+        print(f"🤖 正在生成视频内容解读...")
+        insight_text = self._generate_insight(video_title, video_author, "视频素材", raw_content)
+
+        # 4. 保存 topic_context
+        state['topic_context'] = {
+            "id": url,
+            "title": video_title,
+            "author": video_author,
+            "source": "视频链接",
+            "score": 9999
+        }
+        state['current_step'] = 'waiting_for_rewrite_confirm'
         self.save_state(state)
-        self.run_repurpose(url)
+
+        # 5. 发送选题解读确认卡
+        topic_id_str = url
+        if build_rewrite_card and send_card and get_token:
+            try:
+                token = get_token()
+                card = build_rewrite_card(video_title, insight_text, topic_id_str)
+                send_card(token, os.getenv("FEISHU_RECEIVE_ID", "ou_2da8e0f846c19c8fabebd6c6d82a8d6d"), card)
+                print("✅ 选题解读卡片已发送，请确认是否改写")
+            except Exception as e:
+                logger.warning(f"[FROM_VIDEO] 卡片发送失败: {e}")
+                print(f"⚠️ 卡片发送失败: {e}")
+
+        print(f"\n📝 选题：{video_title}")
+        print(f"💡 解读：{insight_text[:100]}...")
+        print(f"\n⏳ 等待确认后开始改写...（请在飞书中点击「✍️ 开始改写」）")
+        logger.info("[FROM_VIDEO] 流程暂停，等待用户确认改写")
 
     def sync_to_feishu(self, script_path, article_path):
         """
@@ -1162,7 +1315,14 @@ class SelfMediaController:
         return True
 
     def post_to_wechat(self, draft_file, method="api", cover_path=None, title=None):
-        print("\n🚀 正在将内容同步至公众号草稿箱...", flush=True)
+        import datetime as dt
+        import os as _os
+        import time as _time
+        ts_str = dt.datetime.now().strftime('%H%M%S')
+        log_path = _os.path.join(self.workspace, 'logs', f'post_{ts_str}.log')
+        _os.makedirs(_os.path.dirname(log_path), exist_ok=True)
+        log_f = open(log_path, 'w', encoding='utf-8')
+        print(f"\n🚀 正在将内容同步至公众号草稿箱...", flush=True, file=log_f)
         state = self.load_state()
         article_images = state.get('article_images', [])
         
@@ -1172,25 +1332,13 @@ class SelfMediaController:
 
             is_html = str(draft_file).endswith('.html')
             if is_html:
+                # Xiaohu 将 markdown 图片语法转换为 WECHATIMGPH_N 占位符（无下划线）
+                # 这里替换为带 data-local-path 的真实 <img> 标签
                 if article_images:
-                    unmatched = []
                     for i, img_path in enumerate(article_images):
-                        ph1, ph2 = f"<!-- IMG:{i} -->", f"&lt;!-- IMG:{i} --&gt;"
-                        tag = f'<img src="XIMGPH_{i}" data-local-path="{os.path.abspath(img_path)}" style="max-width: 100%; height: auto; display: block; margin: 20px auto;" />'
-                        if ph1 in content or ph2 in content:
-                            content = content.replace(ph1, tag).replace(ph2, tag)
-                        else:
-                            unmatched.append(tag)
-                    if unmatched:
-                        sections = [m.start() for m in re.finditer(r'</section>', content)]
-                        if sections:
-                            step = max(1, len(sections) // (len(unmatched) + 1))
-                            for i, tag in enumerate(unmatched):
-                                pos = sections[min(i * step, len(sections)-1)]
-                                content = content[:pos] + f"\n{tag}\n" + content[pos:]
-                        else:
-                            content += "\n" + "\n".join(unmatched)
-                content = re.sub(r'(?:<!--\s*IMG:\d+\s*-->|&lt;!--\s*IMG:\d+\s*--&gt;)', '', content)
+                        ph = f"WECHATIMGPH_{i + 1}"  # Xiaohu 使用从1开始的计数器
+                        tag = f'<img src="XIMGPH_{i}" data-local-path="{_os.path.abspath(img_path)}" style="max-width: 100%; height: auto; display: block; margin: 20px auto;" />'
+                        content = content.replace(ph, tag)
                 with open(draft_file, 'w', encoding='utf-8') as f: f.write(content)
             else:
                 if article_images and "![插图]" not in content:
@@ -1199,35 +1347,59 @@ class SelfMediaController:
                     pts = sorted(list(set(pts)))
                     for i, img in enumerate(article_images):
                         p_idx = (i * len(pts)) // len(article_images)
-                        lines.insert(pts[p_idx] + i * 2, f'\n![插图]({os.path.abspath(img)})\n')
+                        lines.insert(pts[p_idx] + i * 2, f'\n![插图]({_os.path.abspath(img)})\n')
                     with open(draft_file, 'w', encoding='utf-8') as f: f.write('\n'.join(lines))
 
             # 执行命令准备
             import shutil
             bun_path = shutil.which("bun") or shutil.which("bun.exe")
-            npx_cmd = "npx.cmd" if os.name == "nt" else "npx"
-            baoyu_dir = os.path.join(self.workspace, "baoyu-post-to-wechat")
+            npx_cmd = "npx.cmd" if _os.name == "nt" else "npx"
+            baoyu_dir = _os.path.join(self.workspace, "baoyu-post-to-wechat")
             
             THEMES = {"hardcore": "modern", "insight": "grace", "news": "default", "emotional": "grace", "risk": "modern", "tool": "simple", "growth": "simple"}
-            wechat_theme = THEMES.get(state.get('content_category', ''), os.environ.get("WECHAT_THEME", "default"))
+            wechat_theme = THEMES.get(state.get('content_category', ''), _os.environ.get("WECHAT_THEME", "default"))
             
-            script = os.path.join(baoyu_dir, "scripts", "wechat-article.ts" if method == "browser" else "wechat-api.ts")
+            script = _os.path.join(baoyu_dir, "scripts", "wechat-article.ts" if method == "browser" else "wechat-api.ts")
             args = [bun_path, script] if bun_path else [npx_cmd, "-y", "bun", script]
-            
+
             if is_html:
-                args.extend(["--html", draft_file])
-                for img in state.get('article_images', []):
-                    args.extend(["--image", os.path.abspath(img)])
-            else: args.extend(["--markdown", draft_file, "--theme", wechat_theme])
-            if cover_path and os.path.exists(cover_path): args.extend(["--cover", os.path.abspath(cover_path)])
+                # wechat-api.ts 把 HTML 文件作为位置参数，不支持 --html
+                args.append(draft_file)
+                # HTML 文件内的图片已经在 post_to_wechat 开头处理过了（IMG placeholder 替换）
+                # cover 单独传
+            else:
+                args.extend(["--markdown", draft_file, "--theme", wechat_theme])
+            if cover_path and _os.path.exists(cover_path): args.extend(["--cover", _os.path.abspath(cover_path)])
             if title: args.extend(["--title", title])
-            
-            print(f"[POST] 🚀 执行发布脚本: {' '.join([os.path.basename(str(a)) for a in args])} ...")
-            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
-            for line in proc.stdout: print(line, end='', flush=True)
-            proc.wait()
-            return proc.returncode == 0
+
+            print(f"[POST] 🚀 执行发布脚本: {' '.join([_os.path.basename(str(a)) for a in args])} ...", flush=True, file=log_f)
+
+            # 失败重试机制（最多3次，间隔3秒）
+            max_retries = 3
+            for attempt in range(1, max_retries + 1):
+                proc = subprocess.Popen(
+                    args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding='utf-8', errors='replace'
+                )
+                for line in proc.stdout:
+                    print(line, end='', flush=True, file=log_f)
+                    log_f.flush()
+                proc.wait()
+                if proc.returncode == 0:
+                    print("✅ 发布成功", flush=True, file=log_f)
+                    log_f.close()
+                    return True
+                print(f"[WARN] 发布失败，第 {attempt}/{max_retries} 次，3秒后重试...", flush=True, file=log_f)
+                log_f.flush()
+                if attempt < max_retries:
+                    import time as _time; _time.sleep(3)
+            log_f.close()
+            print(f"\n❌ 全部 {max_retries} 次发布均失败，详细日志：{log_path}", flush=True)
+            return False
         except Exception as e:
+            import traceback as tb
+            tb.print_exc(file=log_f)
+            log_f.close()
             print(f"[ERROR] post_to_wechat 失败: {e}", flush=True)
             return False
 
@@ -1263,14 +1435,28 @@ class SelfMediaController:
         return []
 
     def run_post(self, method="api"):
+        """
+        [v1.2] 发布到公众号（API 模式）
+        流程：LLM 推荐 1-2 个主题 → 为每个主题分别生成 HTML → 每个 HTML 调用一次 post_to_wechat 保存草稿
+        """
         logger.info("启动 run_post | method=%s", method)
         state = self.load_state()
         draft_file = state.get('draft_file')
-        if not draft_file or not os.path.exists(draft_file): return False
+        if not draft_file or not os.path.exists(draft_file):
+            print("⚠️ 未找到可发布的草稿文件")
+            return False
 
-        import importlib
-        html_path = ""
-        
+        with open(draft_file, 'r', encoding='utf-8') as f:
+            final_content = f.read()
+
+        base_title = state.get('topic_context', {}).get('title', '未命名文章')
+        # 去掉标题中的 # 符号
+        base_title = re.sub(r'^#+\s*', '', base_title).strip()
+        cover_path = state.get('cover_image')
+        article_images = state.get('article_images', [])
+
+        # Xiaohu 排版：API 模式，不弹浏览器，直接按推荐主题批量生成
+        html_files = []
         if WEWRITE_XIAOHU_AVAILABLE:
             try:
                 from datetime import datetime
@@ -1280,32 +1466,89 @@ class SelfMediaController:
                     'gallery_timeout': config.xiaohu_gallery_timeout
                 }, logger)
 
-                print(f"🎨 启动 Xiaohu 浏览器主题选择器...")
-                logger.info("启动 Xiaohu Gallery 模式")
-                with open(draft_file, 'r', encoding='utf-8') as f:
-                    final_content = f.read()
+                # 在 final_content 中插入 markdown 图片占位符，Xiaohu 会将其转为 WECHAT_IMGPH_N
+                if article_images:
+                    md_lines = final_content.split('\n')
+                    # 找自然段落分割点：在空行之后、非标题行之前插入
+                    insert_pts = []
+                    for i, line in enumerate(md_lines):
+                        stripped = line.strip()
+                        if stripped == '':
+                            # 空行后是一个潜在插入点
+                            if i + 1 < len(md_lines) and not md_lines[i + 1].strip().startswith('#'):
+                                insert_pts.append(i + 1)
+                    if not insert_pts:
+                        # 降级：在非标题段落后插入
+                        for i, line in enumerate(md_lines):
+                            if line.strip() and not line.strip().startswith('#'):
+                                insert_pts.append(i + 1)
+                    # 去重并限制
+                    insert_pts = sorted(set(insert_pts))[:len(article_images)]
+                    if not insert_pts:
+                        insert_pts = [len(md_lines) // 2]
+                    step = max(1, len(insert_pts) // (len(article_images) + 1))
+                    for i, img in enumerate(article_images):
+                        pt = insert_pts[min(i * step, len(insert_pts) - 1)]
+                        md_lines.insert(pt + i * 2, f'\n![]({img})\n')
+                    final_content = '\n'.join(md_lines)
+                    print(f"🖼️ 已在正文中插入 {len(article_images)} 个图片占位符")
 
-                print(f"✨ 正在分析文章内容并推荐主题...")
+                print(f"🎨 启动 Xiaohu 排版引擎（API 模式）...")
                 available_themes = xiaohu_formatter.list_themes()
                 recommended_themes = self._recommend_themes(final_content, available_themes)
-                
-                ts = datetime.now().strftime('%Y%m%d%H%M')
+
+                # 如果没有推荐主题，使用默认主题
+                if not recommended_themes:
+                    recommended_themes = [config.xiaohu_default_theme]
+                    print(f"⚠️ 未推荐到合适主题，使用默认主题：{recommended_themes}")
+
                 dr_root = os.path.dirname(draft_file)
-                hp = os.path.join(dr_root, f"article_{ts}.html")
-                html_path = xiaohu_formatter.format_with_gallery(final_content, hp, recommend=recommended_themes)
-                print(f"✅ Xiaohu 排版完成：{html_path}")
+                ts = datetime.now().strftime('%Y%m%d%H%M')
+
+                for theme in recommended_themes:
+                    hp = os.path.join(dr_root, f"article_{ts}_{theme}.html")
+                    try:
+                        print(f"🎨 正在使用主题「{theme}」生成 HTML...")
+                        html_path = xiaohu_formatter.format_with_theme(final_content, theme, hp)
+                        html_files.append((theme, html_path))
+                        print(f"✅ 主题「{theme}」排版完成：{html_path}")
+                    except Exception as e:
+                        print(f"⚠️ 主题「{theme}」排版失败: {e}")
+                        logger.warning(f"主题「{theme}」排版异常: {e}")
+
+                # 保存 HTML 文件列表到 state
+                state['html_files'] = html_files
+                self.save_state(state)
+
             except Exception as e:
-                print(f"⚠️ Xiaohu 异常，跳过排版: {e}")
+                print(f"⚠️ Xiaohu 排版引擎异常: {e}")
                 logger.warning(f"Xiaohu 异常: {e}")
 
-        publish_file = html_path if html_path else draft_file
-        if html_path:
-            state['html_file'] = html_path
-            self.save_state(state)
+        # 如果没有成功生成 HTML，降级使用原始 markdown 文件
+        if not html_files:
+            print(f"⚠️ 未生成任何 HTML，降级使用原始 markdown 文件发布")
+            html_files = [("markdown", draft_file)]
 
-        success = self.post_to_wechat(publish_file, method=method, cover_path=state.get('cover_image'), title=state.get('topic_context', {}).get('title'))
-        if success: state['current_step'] = "done"; self.save_state(state)
-        return success
+        # 为每个 HTML 发布到公众号草稿箱
+        success_count = 0
+        for theme, html_path in html_files:
+            title = f"{base_title} [{theme}]" if theme != "markdown" else base_title
+            print(f"📤 正在发布「{title}」到公众号草稿箱...")
+            ok = self.post_to_wechat(html_path, method=method, cover_path=cover_path, title=title)
+            if ok:
+                success_count += 1
+                print(f"✅ 「{title}」已保存到草稿箱")
+            else:
+                print(f"❌ 「{title}」发布失败")
+
+        if success_count > 0:
+            state['current_step'] = "done"
+            self.save_state(state)
+            print(f"\n🎉 共成功发布 {success_count} 篇草稿到公众号后台，请前往确认")
+            return True
+        else:
+            print(f"\n⚠️ 所有草稿发布均失败，请检查日志")
+            return False
 
     def run_publish(self, model_type="seedream", method="api"):
         logger.info("启动 run_publish | model=%s | method=%s", model_type, method)

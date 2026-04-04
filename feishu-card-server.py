@@ -20,8 +20,13 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import uuid
 import queue
 import requests
+import certifi
 import httpx
 from dotenv import load_dotenv
+
+# 修复 Windows 环境下 requests SSL CA 证书问题
+os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+os.environ['SSL_CERT_FILE'] = certifi.where()
 
 # ==================== 统一日志配置 ====================
 from utils.logger_config import get_card_server_logger, init_logging
@@ -1878,9 +1883,8 @@ class FeishuHandler(BaseHTTPRequestHandler):
         }
 
     def run_post(self, token):
-        """Trigger post workflow."""
+        """Trigger post workflow using API mode (no browser)."""
         try:
-            # Check if draft exists first
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
             draft_file = state.get('draft_file')
@@ -1891,17 +1895,30 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 self.send_text(token, f"⚠️ 草稿文件不存在: {draft_file}\n请重新执行改写流程")
                 return
 
+            self.send_text(token, "🚀 正在启动 API 模式批量发布，请稍候...")
+
             os.chdir(WORKDIR)
-            result = subprocess.run(
-                ['python', 'workflow_controller.py', 'post', '--method', 'browser'],
-                capture_output=True, text=True, timeout=360, encoding='utf-8', errors='replace'
-            )
-            if 'QR' in result.stdout or 'qr' in result.stdout.lower() or '二维码' in result.stdout:
-                self.send_text(token, "📱 请扫描二维码并扫码登录公众号后台")
-            elif result.returncode != 0 or ('Error:' in result.stdout and 'Could not maximize' not in result.stdout):
-                self.send_text(token, f"⚠️ 发布失败，请检查公众号后台\n错误信息: {result.stderr[-500:] if result.stderr else result.stdout[-500:]}")
+            sys.path.insert(0, WORKDIR)
+            from workflow_controller import SelfMediaController
+            controller = SelfMediaController()
+
+            ok = controller.run_post(method="api")
+            if ok:
+                self.send_text(token, "🎉 发布完成！请前往公众号后台确认草稿")
             else:
-                self.send_text(token, "🚀 发布流程已启动，请检查公众号后台")
+                # 读取最新一篇发布日志文件，发给用户看具体错误
+                import glob as _glob
+                log_dir = os.path.join(WORKDIR, 'logs')
+                logs = sorted(_glob.glob(os.path.join(log_dir, 'post_*.log')), key=os.path.getmtime, reverse=True)
+                err_detail = ""
+                if logs:
+                    try:
+                        with open(logs[0], 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        err_detail = "\n💡 错误详情：\n" + content[-800:]
+                    except Exception:
+                        pass
+                self.send_text(token, f"⚠️ 发布失败{err_detail}\n如问题持续请检查公众号后台IP白名单设置")
         except Exception as e:
             self.send_text(token, f"⚠️ 发布失败: {str(e)[:100]}")
 

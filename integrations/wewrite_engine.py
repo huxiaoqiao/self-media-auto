@@ -10,6 +10,7 @@ import logging
 import subprocess
 import tempfile
 import requests
+import certifi
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from pathlib import Path
@@ -255,7 +256,8 @@ class WeWriteEngine:
             f'{base_url}/chat/completions',
             headers=headers,
             json=payload,
-            timeout=60
+            timeout=60,
+            verify=certifi.where()
         )
         response.raise_for_status()
 
