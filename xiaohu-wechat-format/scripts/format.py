@@ -1148,8 +1148,8 @@ def inject_inline_styles(html: str, theme: dict, skip_wrapper: bool = False) -> 
     for tag_key, props in styles.items():
         style_map[tag_key] = build_style_string(props)
 
-    # === 1. 处理列表（微信特殊处理：ul/ol → section 模拟，支持嵌套）===
-    html = convert_lists_to_sections(html, style_map)
+    # === 1. 处理列表（微信友好版：保留标准 ul/ol，但注入主题样式）===
+    html = convert_lists_to_wechat_friendly(html, style_map)
 
     # === 2. 处理 callout 块 ===
     html = convert_callouts(html, style_map)
@@ -1305,6 +1305,78 @@ def inject_inline_styles(html: str, theme: dict, skip_wrapper: bool = False) -> 
     if dark_mode:
         html = inject_dark_mode_attrs(html, dark_mode, style_map)
 
+    return html
+
+
+def convert_lists_to_wechat_friendly(html: str, style_map: dict, depth: int = 0) -> str:
+    """把 ul/ol 列表转换为微信友好的标准结构，保留主题样式。
+
+    微信编辑器会过滤掉 <section> 标签和 flex 布局，
+    因此改用标准 <ul>/<ol> + <li> 结构，
+    通过内联样式实现主题中定义的列表外观（颜色、间距、字体等）。
+    """
+    wrapper_style = style_map.get("list_wrapper", "")
+    bullet_style = style_map.get("list_item_bullet", "")
+    ol_bullet_style = style_map.get("ol_item_bullet", bullet_style)
+    text_style = style_map.get("list_item_text", "")
+
+    # 嵌套缩进
+    indent_style = f"padding-left:{16 * depth}px;" if depth > 0 else ""
+
+    def process_list_item(item_html: str, bullet: str, bullet_s: str) -> str:
+        """处理单个 li，可能包含嵌套的 ul/ol"""
+        nested_ul = re.search(r'<ul>(.*?)</ul>', item_html, re.DOTALL)
+        nested_ol = re.search(r'<ol>(.*?)</ol>', item_html, re.DOTALL)
+
+        # 提取主文本（去掉嵌套列表和 p 标签）
+        main_text = item_html
+        if nested_ul:
+            main_text = item_html[:nested_ul.start()]
+        elif nested_ol:
+            main_text = item_html[:nested_ol.start()]
+        main_text = re.sub(r"</?p>", "", main_text).strip()
+
+        # 用 <div> + flex 模拟行布局（微信支持 display:flex）
+        # 注意：微信不支持 display:flex 直接用在 <li> 上，所以用 <div> 包裹
+        li_style = (f"{indent_style}list-style:none;margin-bottom:8px;"
+                    if not depth else "list-style:none;margin-bottom:8px;")
+        result = (
+            f'<div style="{li_style}">'
+            f'<span style="{bullet_s}">{bullet}</span>'
+            f'<span style="{text_style}">{main_text}</span>'
+            f'</div>'
+        )
+
+        # 递归处理嵌套列表
+        if nested_ul:
+            nested_html = f'<ul>{nested_ul.group(1)}</ul>'
+            result += convert_lists_to_wechat_friendly(nested_html, style_map, depth + 1)
+        elif nested_ol:
+            nested_html = f'<ol>{nested_ol.group(1)}</ol>'
+            result += convert_lists_to_wechat_friendly(nested_html, style_map, depth + 1)
+
+        return result
+
+    def replace_ul(match):
+        items = re.findall(r"<li>(.*?)</li>", match.group(0), re.DOTALL)
+        rows = []
+        for item in items:
+            rows.append(process_list_item(item, "•", bullet_style))
+        wrap_style = f"{wrapper_style}{indent_style}" if indent_style else wrapper_style
+        ul_style = f"list-style:none;{wrap_style};padding-left:20px;"
+        return f'<ul style="{ul_style}">{"".join(rows)}</ul>'
+
+    def replace_ol(match):
+        items = re.findall(r"<li>(.*?)</li>", match.group(0), re.DOTALL)
+        rows = []
+        for idx, item in enumerate(items, 1):
+            rows.append(process_list_item(item, f"{idx}.", ol_bullet_style))
+        wrap_style = f"{wrapper_style}{indent_style}" if indent_style else wrapper_style
+        ol_style = f"list-style:none;{wrap_style};padding-left:20px;"
+        return f'<ol style="{ol_style}">{"".join(rows)}</ol>'
+
+    html = re.sub(r"<ul>.*?</ul>", replace_ul, html, flags=re.DOTALL)
+    html = re.sub(r"<ol>.*?</ol>", replace_ol, html, flags=re.DOTALL)
     return html
 
 
@@ -1693,6 +1765,10 @@ def main():
 
     # 处理流程
     content = strip_frontmatter(content)
+    # 去掉 H1 标题行（标题已单独提取，正文中不再需要）
+    content = re.sub(r"^#\s+.+$", "", content, flags=re.MULTILINE).strip()
+    # 清理 BOM 字符
+    content = content.replace("\ufeff", "")
     content = process_callouts(content)
     content = process_manual_footnotes(content)
     content = process_fenced_containers(content)

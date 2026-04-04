@@ -166,6 +166,33 @@ def replace_all_images(html, article_dir, token):
     replaced = 0
     failed = 0
 
+    # ── 预处理：处理 WECHATIMGPH_N 纯文本占位符（如 Xiaohu 生成的）────────────────
+    # Xiaohu 把图片替换为 WECHATIMGPH_1 这样的纯文本，不是 <img> 标签
+    # 这里把它们先转成 <img> 标签，后续再走正常的上传→CDN URL 流程
+    if image_dir.exists():
+        image_files = sorted([f for f in image_dir.iterdir() if f.is_file()])
+        if image_files:
+            print(f"  [预处理] 发现 {len(image_files)} 张本地图片，转换 WECHATIMGPH 占位符...")
+            # 按顺序收集 HTML 中所有 WECHATIMGPH_N（唯一出现一次）
+            placeholder_map = {}  # "WECHATIMGPH_1" -> "images/gen_025123.png"
+            counter = 1
+            for img_file in image_files:
+                placeholder = f"WECHATIMGPH_{counter}"
+                placeholder_map[placeholder] = f"images/{img_file.name}"
+                counter += 1
+
+            # 在 <p> 标签内把纯文本占位符替换为 <img> 标签
+            for placeholder, src_path in placeholder_map.items():
+                # 匹配 <p>...</p> 内的纯文本占位符（不跨标签）
+                pattern = rf'(<p[^>]*>)(.*?)(</p>)'
+                def replace_in_p(m, ph=placeholder, sp=src_path):
+                    before, content, after = m.group(1), m.group(2), m.group(3)
+                    if ph in content:
+                        new_content = content.replace(ph, f'<img src="{sp}">')
+                        return before + new_content + after
+                    return m.group(0)
+                html = re.sub(pattern, replace_in_p, html, flags=re.DOTALL)
+
     def replace_src(match):
         nonlocal replaced, failed
         src = match.group(1)
@@ -245,10 +272,19 @@ def push_draft(token, title, content, thumb_media_id, author=""):
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────
 def extract_title_from_html(html):
-    """从 HTML 中提取 h1 标题"""
+    """从 HTML 中提取标题（支持 h1 和 Xiaohu 特有的 p# 格式）"""
+    # 标准 h1
     match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
     if match:
-        return re.sub(r"<[^>]+>", "", match.group(1)).strip()
+        title = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+        if title:
+            return title
+    # Xiaohu 特有：标题放在 <p> 标签内，开头带 #（如 \ufeff# 钉钉... 或 # 钉钉...）
+    match = re.search(r"<p[^>]*>\s*[#\ufeff]+(.+?)</p>", html)
+    if match:
+        title = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+        if title:
+            return title
     return None
 
 
