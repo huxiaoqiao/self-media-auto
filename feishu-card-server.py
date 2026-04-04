@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 """Feishu Card Server - Handles card button events and sends interactive cards."""
 
+import sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
 import json
 import subprocess
 import urllib.request
@@ -1605,17 +1608,16 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
         generate_script = os.getenv("GENERATE_VIDEO_SCRIPT", "FALSE").upper() == "TRUE"
 
-        # 检查是否已经触发过视觉工程（防止重复点击）
-        if generate_script:
-            if state.get('script_approved') and state.get('article_approved'):
-                print("[DEBUG] Both already approved, visual already triggered", flush=True)
-                self.send_text(token, "⏳ 视觉工程已在运行中，请稍候...")
-                return
-        else:
-            if state.get('article_approved'):
-                print("[DEBUG] Article already approved, visual already triggered", flush=True)
-                self.send_text(token, "⏳ 视觉工程已在运行中，请稍候...")
-                return
+        # 检查视觉工程是否真正在运行中（防止重复点击）
+        # 注意：必须用 is_generating_cover 判断，不能用 *_approved 标志判断
+        # 因为 *_approved 只表示用户点过通过，不代表当前有进程在跑
+        with open(STATE_FILE, 'r', encoding='utf-8') as f:
+            current_state = json.load(f)
+
+        if current_state.get('is_generating_cover', False):
+            print("[DEBUG] Visual generation already in progress, skipping duplicate click", flush=True)
+            self.send_text(token, "⏳ 视觉工程已在运行中，请稍候...")
+            return
 
         state[flag_key] = True
         with open(STATE_FILE, 'w', encoding='utf-8') as f:

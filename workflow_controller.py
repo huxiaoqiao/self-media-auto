@@ -310,14 +310,37 @@ class SelfMediaController:
         state = self.load_state()
         saved_industry = state.get('industry')
 
-        # 判断是否是新的一轮：如果已发布过，则重置 last_id，直接获取最新
-        current_step = state.get('current_step', '')
-        if current_step in ['published_to_draft', 'published']:
-            logger.info("检测到已发布状态 (%s)，开启新一轮 discovery，清空 last_id", current_step)
-            state.pop('cimi_last_id', None)
-            state.pop('candidates_page_index', None)
-            state['candidates'] = []
-            state['last_candidates'] = []
+        # ============================================================
+        # [胡老板要求] 每当启动新一轮 discovery 时，全面重置状态
+        # 避免上一轮流程卡在中间状态（waiting_for_content_review 等）
+        # 影响新一轮业务逻辑
+        # ============================================================
+        if refresh:
+            logger.info("[DISCOVERY] 新一轮选题开始，全面重置中间状态 | current_step=%s", state.get('current_step'))
+            # 保留行业配置和关键持久化配置
+            keep_fields = {'industry', 'candidates_page_size', 'candidates_total'}
+            # 需要清理的上一轮流程相关字段
+            reset_fields = [
+                'current_step', 'selected_topic', 'cover_image', 'script_approved',
+                'article_approved', 'is_generating_cover', 'last_discovery_time',
+                'draft_file', 'video_script', 'topic_context', 'last_id',
+                'cimi_last_id', 'candidates_page_index', 'candidates',
+                'last_candidates', 'article_images', 'content_category',
+                'source_selection_pending', 'step'
+            ]
+            for field in reset_fields:
+                state.pop(field, None)
+            state['current_step'] = 'idle'  # 重置为初始状态，等待新的 discovery 结果
+            logger.info("[DISCOVERY] 状态重置完成，进入 idle | industry=%s", saved_industry)
+        else:
+            # 同一轮内换一批，只清分页相关
+            current_step = state.get('current_step', '')
+            if current_step in ['published_to_draft', 'published']:
+                logger.info("检测到已发布状态 (%s)，开启新一轮 discovery，清空 last_id", current_step)
+                state.pop('cimi_last_id', None)
+                state.pop('candidates_page_index', None)
+                state['candidates'] = []
+                state['last_candidates'] = []
 
         # refresh=True 表示获取最新选题，不使用缓存的 last_id
         # refresh=False 表示使用缓存的 last_id 继续翻页
