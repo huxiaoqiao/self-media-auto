@@ -449,6 +449,131 @@ class SelfMediaController:
 
         return True
 
+    def _fetch_from_jizhile(self, refresh: bool, state: dict) -> list:
+        """
+        从极致了 API 获取微信爆款文章
+
+        Args:
+            refresh: True 表示获取最新，False 表示继续翻页
+            state: 当前状态字典
+
+        Returns:
+            candidates 列表
+        """
+        from datetime import datetime, timedelta
+
+        # 计算时间范围：昨天到今天
+        end_date = datetime.now() - timedelta(days=1)
+        start_date = datetime.now() - timedelta(days=2)
+        start_time = start_date.strftime("%Y-%m-%d")
+        end_time = end_date.strftime("%Y-%m-%d")
+
+        # 获取配置
+        jizhile_key = os.getenv("JIZHILE_KEY")
+        jizhile_category = os.getenv("JIZHILE_CATEGORY", "7")
+        jizhile_keyword = os.getenv("JIZHILE_KEYWORD", "OpenClaw")
+
+        if not jizhile_key:
+            print("❌ 未在环境变量中找到 JIZHILE_KEY，请先执行 run_setup 或修改 .env 文件。")
+            logger.error("[JIZHILE] Missing JIZHILE_KEY in environment")
+            sys.exit(1)
+
+        # 计算页码
+        if refresh:
+            page = 1
+            logger.info("[JIZHILE] refresh=True, starting from page 1")
+        else:
+            page = state.get('jizhile_page_index', 1) + 1
+            logger.info("[JIZHILE] refresh=False, continuing from page %d", page)
+
+        # 构建请求参数
+        payload = {
+            "key": jizhile_key,
+            "keyword": jizhile_keyword,
+            "pub_type": "0",  # 图文
+            "category": jizhile_category,
+            "page": str(page),
+            "start_time": start_time,
+            "end_time": end_time
+        }
+
+        endpoint = "https://www.dajiala.com/fbmain/monitor/v3/hot_typical_search"
+
+        print(f"📥 [极致了 API] 正在获取爆款文章 (分类：{jizhile_category}, 时间：{start_time} 至 {end_time})...")
+        logger.info("[JIZHILE] Fetching hot articles, category=%s, time_range=%s to %s",
+                   jizhile_category, start_time, end_time)
+
+        try:
+            # 记录请求日志
+            logger.info(">>> [HTTP REQUEST] POST %s", endpoint)
+            logger.info(">>> [REQUEST PAYLOAD] key=%s, keyword=%s, page=%s",
+                       jizhile_key[:10] + "..." if len(jizhile_key) > 10 else jizhile_key,
+                       jizhile_keyword, page)
+
+            # 发送请求 (multipart/form-data)
+            response = requests.post(endpoint, data=payload, timeout=15)
+
+            logger.info(">>> [HTTP RESPONSE] Status: %s", response.status_code)
+            response.raise_for_status()
+
+            result = response.json()
+
+            # 检查返回码
+            if result.get("code") != 0:
+                print(f"❌ 极致了 API 返回错误：code={result.get('code')}, msg={result.get('msg')}")
+                logger.error("[JIZHILE] API error: code=%s, msg=%s",
+                           result.get('code'), result.get('msg'))
+                sys.exit(1)
+
+            # 提取费用信息
+            cost = result.get("cost", 0)
+            remain_money = result.get("remain_money", 0)
+            note = result.get("note", "")
+            total = result.get("total", 0)
+            total_page = result.get("total_page", 0)
+
+            # 打印费用信息
+            print(f"📥 [极致了 API] 请求成功")
+            print(f"   费用说明：{note}")
+            print(f"   本次消费：{cost:.2f} 元")
+            print(f"   账户余额：{remain_money:.2f} 元")
+            print(f"   数据总量：{total} 条 | 总页数：{total_page}")
+            logger.info("[JIZHILE] Cost: %s yuan, Balance: %s yuan, Total: %d articles",
+                       cost, remain_money, total)
+
+            # 映射数据
+            candidates = []
+            data_items = result.get("data", [])
+            for item in data_items[:15]:
+                candidates.append({
+                    "id": item.get("url", ""),
+                    "source": "微信公众号 (极致了)",
+                    "title": item.get("title", ""),
+                    "author": item.get("mp_nickname", "未知公众号"),
+                    "likes": int(item.get("zan_num", 0)),
+                    "comments": int(item.get("read_num", 0)),
+                    "score": float(item.get("hot", 0))
+                })
+
+            # 保存分页状态
+            state['jizhile_page_index'] = page
+            logger.info("[JIZHILE] Saved page index: %d", page)
+
+            return candidates
+
+        except requests.exceptions.Timeout:
+            print("❌ 请求极致了 API 超时，请检查网络连接")
+            logger.error("[JIZHILE] Request timeout")
+            sys.exit(1)
+        except requests.exceptions.RequestException as e:
+            print(f"❌ 请求极致了 API 失败：{e}")
+            logger.error("[JIZHILE] Request failed: %s", e, exc_info=True)
+            sys.exit(1)
+        except (KeyError, TypeError, json.JSONDecodeError) as e:
+            print(f"❌ 解析极致了 API 响应失败：{e}")
+            logger.error("[JIZHILE] Parse response failed: %s", e, exc_info=True)
+            sys.exit(1)
+
     def run_discovery(self, keyword=None, refresh=True, last_id=None):
         """
         [卡点 1 之前] 嗅探系统 (次幂数据版)
@@ -510,8 +635,191 @@ class SelfMediaController:
             else:
                 logger.info("refresh=True 但命令行传了 --last_id=%s，尊重用户输入", last_id)
 
-        print("[嗅探系统] 启动 [嗅探子系统 - 次幂数据版]...")
-        logger.info("[嗅探系统] 启动 [嗅探子系统  次幂数据版]...")
+        # 选择 API Provider
+        provider = os.getenv("HOT_ARTICLE_PROVIDER", "jizhile")
+
+        if provider == "jizhile":
+            print("[嗅探系统] 启动 [嗅探子系统 - 极致了 API]...")
+            logger.info("[DISCOVERY] Using provider: jizhile")
+            candidates = self._fetch_from_jizhile(refresh, state)
+        else:
+            # 使用次幂 API，需要先获取分类
+            cimi_category_en, cimi_category_cn = self._get_cimi_category(keyword, saved_industry, state)
+            print("[嗅探系统] 启动 [嗅探子系统 - 次幂数据版]...")
+            logger.info("[DISCOVERY] Using provider: cimi")
+            candidates = self._fetch_from_cimi(refresh, state, last_id, cimi_category_en)
+
+        # 展示和保存候选列表
+        print(f"\n=== ✨ 今日推荐 Top {len(candidates)} 爆款选题 === (数据来源：{provider})")
+        logger.info("[DISCOVERY] Displaying %d recommendations", len(candidates))
+        for idx, c in enumerate(candidates, 1):
+            print(f"{idx}. [{c['source']}] [{c['title']}]({c['id']})")
+            print(f"👤 {c['author']} | 👁️ 阅读：{c.get('comments', 0)} | 👍 赞：{c.get('likes', 0)} | 🔥 热度：{c.get('score', 0)}")
+            logger.info("[DISCOVERY] Displaying candidate: %s", c["title"][:30])
+        print("===================================")
+        logger.info("[DISCOVERY] Display completed")
+
+        state['current_step'] = "discovery_done"
+        state['last_sync'] = datetime.now().isoformat()
+        state['candidates'] = candidates
+        state['last_candidates'] = candidates  # 保存用于分页浏览
+        state['candidates_page_index'] = 1  # 重置页码
+        self.save_state(state)
+
+    def _get_cimi_category(self, keyword, saved_industry, state) -> tuple:
+        """
+        获取次幂 API 分类（仅在使用次幂 API 时调用）
+
+        Returns:
+            (category_en, category_cn) 元组
+        """
+        categories = {
+            "1": ("xiaolvshu", "小绿书"), "2": ("yuer", "育儿"), "3": ("keji", "科技"),
+            "4": ("tiyu", "体育健身"), "5": ("caijing", "财经"), "6": ("meishi", "美食"),
+            "7": ("yiliao", "医疗"), "8": ("yule", "娱乐"), "9": ("qinggan", "情感"),
+            "10": ("lishi", "历史"), "11": ("junshi", "军事国际"), "12": ("shishang", "美妆时尚"),
+            "13": ("wenhua", "文化"), "14": ("qiche", "汽车"), "15": ("youxi", "游戏"),
+            "16": ("lvyou", "旅游"), "17": ("fangchan", "房产"), "18": ("jiangkang", "健康养生"),
+            "19": ("zhichang", "职场"), "20": ("sheying", "摄影"), "21": ("zixun", "资讯热点"),
+            "22": ("jiaoyu", "教育"), "23": ("biancheng", "开发者"), "24": ("dianying", "影视"),
+            "25": ("meizhuang", "美妆"), "26": ("shenghuo", "生活"), "27": ("shuma", "数码"),
+            "28": ("meiti", "媒体"), "29": ("mengchong", "宠物"), "30": ("sannong", "三农"),
+            "31": ("xingzuo", "星座命理"), "32": ("gaoxiao", "搞笑"), "33": ("dongman", "动漫"),
+            "34": ("jiaju", "家居"), "35": ("kexue", "科学"), "36": ("yingxiao", "商业营销"),
+            "37": ("chuangye", "个人成长"), "38": ("bizhi", "壁纸头像"), "39": ("falv", "法律"),
+            "40": ("minsheng", "民生"), "41": ("wenan", "文案"), "42": ("tizhi", "体制"),
+            "43": ("wenzhai", "文摘"), "44": ("ai", "AI"), "45": ("other", "其它")
+        }
+
+        def find_category(kw):
+            kw = str(kw).strip()
+            if kw in categories: return categories[kw]
+            for key, val in categories.items():
+                if kw == val[0] or kw == val[1]:
+                    return val
+            return None
+
+        target_category = None
+
+        if keyword:
+            matched = find_category(keyword)
+            if matched:
+                target_category = matched
+                state['industry'] = matched[0]
+                self.save_state(state)
+                print(f"✅ 已将您的专属行业更新为：{matched[1]}")
+                logger.info("[DISCOVERY] Industry matched: %s", matched[1])
+            else:
+                print(f"❌ 错误：未知分类 '{keyword}'")
+                logger.error("[STATE] Save failed: Invalid category")
+                sys.exit(0)
+        elif saved_industry:
+            matched = find_category(saved_industry)
+            if matched:
+                target_category = matched
+                print(f"✨ 检测到已保存的专属行业：{matched[1]} (如需更改，请在命令后加 --keyword <新序号>)")
+                logger.info("[DISCOVERY] Using saved industry: %s", matched[1])
+
+        if not target_category:
+            print("👋 请配置您的专属行业/领域 (次幂爆款分类)，系统将自动保存以便日后为您自动获取爆文：")
+            logger.info("[DISCOVERY] Displaying category list")
+            items = list(categories.items())
+            for i in range(0, len(items), 5):
+                chunk = items[i:i+5]
+                line = "  ".join(f"{k}. {v[1]:<6}" for k, v in chunk)
+                print(line)
+                logger.info("[DISCOVERY] Displaying category list")
+            print("⚠️ [ACTION_REQUIRED] 等待用户输入：请通过交互通道回复你想抓取的行业序号（如'3'表示科技）。")
+            logger.warning("[STATE] State file not found, starting fresh")
+            sys.exit(0)
+
+        return target_category
+
+    def _fetch_from_cimi(self, refresh: bool, state: dict, last_id: Optional[str], cimi_category_en: str) -> list:
+        """
+        从次幂数据 API 获取微信爆款文章
+
+        Args:
+            refresh: True 表示获取最新，False 表示继续翻页
+            state: 当前状态字典
+            last_id: 上次请求的 last_id
+            cimi_category_en: 分类英文名称
+
+        Returns:
+            candidates 列表
+        """
+        import requests
+
+        # refresh=False 时使用缓存的 last_id
+        if not refresh:
+            if last_id is None:
+                last_id = state.get('cimi_last_id')
+                if last_id:
+                    logger.info("使用缓存的 last_id: %s", last_id)
+        else:
+            if last_id is None:
+                logger.info("refresh=True 且未传 --last_id，获取最新选题")
+            else:
+                logger.info("refresh=True 但命令行传了 --last_id=%s，尊重用户输入", last_id)
+
+        cimi_app_id = os.getenv("CIMI_APP_ID")
+        cimi_app_secret = os.getenv("CIMI_APP_SECRET")
+        if not cimi_app_id or not cimi_app_secret:
+            print("❌ 未在环境变量中找到 CIMI_APP_ID 或 CIMI_APP_SECRET，请先执行 run_setup 或修改 .env 文件。")
+            logger.error("[CIMI] Missing credentials")
+            sys.exit(1)
+
+        api_base = "https://api.cimidata.com"
+        headers = {"Content-Type": "application/json"}
+
+        print("📥 [1/2] 正在获取次幂数据 Access Token...")
+        try:
+            token_payload = {"app_id": cimi_app_id, "app_secret": cimi_app_secret}
+            logger.info(">>> [HTTP REQUEST] POST %s", f"{api_base}/api/v2/token")
+            token_resp = requests.post(f"{api_base}/api/v2/token", json=token_payload, headers=headers, timeout=10)
+            logger.info(">>> [HTTP RESPONSE] Status: %s", token_resp.status_code)
+            token_resp.raise_for_status()
+            access_token = token_resp.json()["data"]["access_token"]
+            logger.info(">>> [TOKEN OK] access_token=%s", access_token[:10] + "..." if len(access_token) > 10 else access_token)
+        except Exception as e:
+            print(f"❌ 请求 Token 接口时发生异常：{e}")
+            logger.error("[CIMI] Token request failed: %s", e, exc_info=True)
+            sys.exit(1)
+
+        print("📥 [2/2] 正在拉取爆款文章列表...")
+        candidates = []
+        try:
+            payload = {"category": cimi_category_en, "read_num": 1000}
+            if last_id:
+                payload["last_id"] = last_id
+
+            logger.info(">>> [HTTP REQUEST] POST %s", f"{api_base}/api/v2/hot/articles?access_token={access_token[:10]}...")
+            articles_resp = requests.post(f"{api_base}/api/v2/hot/articles?access_token={access_token}",
+                                         json=payload, headers=headers, timeout=15)
+            logger.info(">>> [HTTP RESPONSE] Status: %s", articles_resp.status_code)
+            articles_data = articles_resp.json()
+            items = articles_data.get("data", {}).get("items", [])
+            for item in items[:15]:
+                candidates.append({
+                    "id": item.get("content_url"),
+                    "source": "微信公众号 (次幂)",
+                    "title": item.get("title", ""),
+                    "likes": int(item.get("like_num", 0)),
+                    "comments": int(item.get("read_num", 0)),
+                    "author": item.get("nickname", "未知公众号"),
+                    "score": int(item.get("hotness", 0))
+                })
+
+            # Save pagination cursor if available
+            new_last_id = articles_data.get("data", {}).get("last_id")
+            if new_last_id:
+                state['cimi_last_id'] = str(new_last_id)
+        except Exception as e:
+            print(f"❌ 请求获取文章接口时发生异常：{e}")
+            logger.error("[CIMI] Request failed: %s", e, exc_info=True)
+            sys.exit(1)
+
+        return candidates
         
         categories = {
             "1": ("xiaolvshu", "小绿书"), "2": ("yuer", "育儿"), "3": ("keji", "科技"), 
