@@ -449,6 +449,131 @@ class SelfMediaController:
 
         return True
 
+    def _fetch_from_jizhile(self, refresh: bool, state: dict) -> list:
+        """
+        从极致了 API 获取微信爆款文章
+
+        Args:
+            refresh: True 表示获取最新，False 表示继续翻页
+            state: 当前状态字典
+
+        Returns:
+            candidates 列表
+        """
+        from datetime import datetime, timedelta
+
+        # 计算时间范围：昨天到今天
+        end_date = datetime.now() - timedelta(days=1)
+        start_date = datetime.now() - timedelta(days=2)
+        start_time = start_date.strftime("%Y-%m-%d")
+        end_time = end_date.strftime("%Y-%m-%d")
+
+        # 获取配置
+        jizhile_key = os.getenv("JIZHILE_KEY")
+        jizhile_category = os.getenv("JIZHILE_CATEGORY", "7")
+        jizhile_keyword = os.getenv("JIZHILE_KEYWORD", "OpenClaw")
+
+        if not jizhile_key:
+            print("❌ 未在环境变量中找到 JIZHILE_KEY，请先执行 run_setup 或修改 .env 文件。")
+            logger.error("[JIZHILE] Missing JIZHILE_KEY in environment")
+            sys.exit(1)
+
+        # 计算页码
+        if refresh:
+            page = 1
+            logger.info("[JIZHILE] refresh=True, starting from page 1")
+        else:
+            page = state.get('jizhile_page_index', 1) + 1
+            logger.info("[JIZHILE] refresh=False, continuing from page %d", page)
+
+        # 构建请求参数
+        payload = {
+            "key": jizhile_key,
+            "keyword": jizhile_keyword,
+            "pub_type": "0",  # 图文
+            "category": jizhile_category,
+            "page": str(page),
+            "start_time": start_time,
+            "end_time": end_time
+        }
+
+        endpoint = "https://www.dajiala.com/fbmain/monitor/v3/hot_typical_search"
+
+        print(f"📥 [极致了 API] 正在获取爆款文章 (分类：{jizhile_category}, 时间：{start_time} 至 {end_time})...")
+        logger.info("[JIZHILE] Fetching hot articles, category=%s, time_range=%s to %s",
+                   jizhile_category, start_time, end_time)
+
+        try:
+            # 记录请求日志
+            logger.info(">>> [HTTP REQUEST] POST %s", endpoint)
+            logger.info(">>> [REQUEST PAYLOAD] key=%s, keyword=%s, page=%s",
+                       jizhile_key[:10] + "..." if len(jizhile_key) > 10 else jizhile_key,
+                       jizhile_keyword, page)
+
+            # 发送请求 (multipart/form-data)
+            response = requests.post(endpoint, data=payload, timeout=15)
+
+            logger.info(">>> [HTTP RESPONSE] Status: %s", response.status_code)
+            response.raise_for_status()
+
+            result = response.json()
+
+            # 检查返回码
+            if result.get("code") != 0:
+                print(f"❌ 极致了 API 返回错误：code={result.get('code')}, msg={result.get('msg')}")
+                logger.error("[JIZHILE] API error: code=%s, msg=%s",
+                           result.get('code'), result.get('msg'))
+                sys.exit(1)
+
+            # 提取费用信息
+            cost = result.get("cost", 0)
+            remain_money = result.get("remain_money", 0)
+            note = result.get("note", "")
+            total = result.get("total", 0)
+            total_page = result.get("total_page", 0)
+
+            # 打印费用信息
+            print(f"📥 [极致了 API] 请求成功")
+            print(f"   费用说明：{note}")
+            print(f"   本次消费：{cost:.2f} 元")
+            print(f"   账户余额：{remain_money:.2f} 元")
+            print(f"   数据总量：{total} 条 | 总页数：{total_page}")
+            logger.info("[JIZHILE] Cost: %s yuan, Balance: %s yuan, Total: %d articles",
+                       cost, remain_money, total)
+
+            # 映射数据
+            candidates = []
+            data_items = result.get("data", [])
+            for item in data_items[:15]:
+                candidates.append({
+                    "id": item.get("url", ""),
+                    "source": "微信公众号 (极致了)",
+                    "title": item.get("title", ""),
+                    "author": item.get("mp_nickname", "未知公众号"),
+                    "likes": int(item.get("zan_num", 0)),
+                    "comments": int(item.get("read_num", 0)),
+                    "score": float(item.get("hot", 0))
+                })
+
+            # 保存分页状态
+            state['jizhile_page_index'] = page
+            logger.info("[JIZHILE] Saved page index: %d", page)
+
+            return candidates
+
+        except requests.exceptions.Timeout:
+            print("❌ 请求极致了 API 超时，请检查网络连接")
+            logger.error("[JIZHILE] Request timeout")
+            sys.exit(1)
+        except requests.exceptions.RequestException as e:
+            print(f"❌ 请求极致了 API 失败：{e}")
+            logger.error("[JIZHILE] Request failed: %s", e, exc_info=True)
+            sys.exit(1)
+        except (KeyError, TypeError, json.JSONDecodeError) as e:
+            print(f"❌ 解析极致了 API 响应失败：{e}")
+            logger.error("[JIZHILE] Parse response failed: %s", e, exc_info=True)
+            sys.exit(1)
+
     def run_discovery(self, keyword=None, refresh=True, last_id=None):
         """
         [卡点 1 之前] 嗅探系统 (次幂数据版)
