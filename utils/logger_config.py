@@ -72,15 +72,18 @@ def cleanup_old_logs(log_dir: Optional[Path] = None, max_age_days: int = MAX_LOG
                 if file_date < cutoff:
                     f.unlink()
                     deleted_count += 1
-                    print(f"[LOG_CLEANUP] Deleted old log: {f.name}")
+                    try: print(f"[LOG_CLEANUP] Deleted old log: {f.name}")
+                    except: pass
             except ValueError:
                 # 日期解析失败，跳过
                 pass
 
     if deleted_count > 0:
-        print(f"[LOG_CLEANUP] Removed {deleted_count} old log file(s) (older than {max_age_days} days)")
+        try: print(f"[LOG_CLEANUP] Removed {deleted_count} old log file(s) (older than {max_age_days} days)")
+        except: pass
     else:
-        print(f"[LOG_CLEANUP] No old logs to remove (retaining {len(list(log_dir.glob('*.log')))} files)")
+        try: print(f"[LOG_CLEANUP] No old logs to remove (retaining {len(list(log_dir.glob('*.log')))} files)")
+        except: pass
 
     return deleted_count
 

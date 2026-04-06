@@ -1304,9 +1304,11 @@ class SelfMediaController:
                     if i_url:
                         l_path = self.download_image_file(i_url, folder=os.path.join(self.workspace, 'assets', 'illustrations'))
                         if l_path:
-                            state['article_images'].append(l_path)
+                            # 保存 image-position 映射，而不是单纯路径
+                            ill_info = {"path": l_path, "pos": info.get("pos", ""), "ratio": ratio, "prompt": p[:50]}
+                            state['article_images'].append(ill_info)
                             self.save_state(state)
-                            print(f"[FEISHU_PREVIEW] TYPE=ILLUS INDEX={i} PATH={l_path}", flush=True)
+                            print(f"[FEISHU_PREVIEW] TYPE=ILLUS INDEX={i} POS={info.get('pos', 'N/A')} PATH={l_path}", flush=True)
                 except Exception as ie:
                     logger.error("插图 %d 生成失败: %s", i, ie)
             self.save_state(state)
@@ -1469,27 +1471,66 @@ class SelfMediaController:
                 # 在 final_content 中插入 markdown 图片占位符，Xiaohu 会将其转为 WECHAT_IMGPH_N
                 if article_images:
                     md_lines = final_content.split('\n')
-                    # 找自然段落分割点：在空行之后、非标题行之前插入
-                    insert_pts = []
+                    
+                    # 构建段落索引列表（用于 pos 匹配）
+                    para_starts = []  # 每个段落开始的行号
                     for i, line in enumerate(md_lines):
                         stripped = line.strip()
-                        if stripped == '':
-                            # 空行后是一个潜在插入点
-                            if i + 1 < len(md_lines) and not md_lines[i + 1].strip().startswith('#'):
-                                insert_pts.append(i + 1)
-                    if not insert_pts:
-                        # 降级：在非标题段落后插入
-                        for i, line in enumerate(md_lines):
-                            if line.strip() and not line.strip().startswith('#'):
-                                insert_pts.append(i + 1)
-                    # 去重并限制
-                    insert_pts = sorted(set(insert_pts))[:len(article_images)]
-                    if not insert_pts:
-                        insert_pts = [len(md_lines) // 2]
-                    step = max(1, len(insert_pts) // (len(article_images) + 1))
-                    for i, img in enumerate(article_images):
-                        pt = insert_pts[min(i * step, len(insert_pts) - 1)]
-                        md_lines.insert(pt + i * 2, f'\n![]({img})\n')
+                        if stripped and not stripped.startswith('#'):
+                            para_starts.append(i)
+                    
+                    # 为每个图片找插入位置：优先用 pos 字段匹配，其次均匀分布
+                    insert_map = []  # [(line_index, image_info), ...]
+                    
+                    for ill in article_images:
+                        img_path = ill.get('path', ill) if isinstance(ill, dict) else ill
+                        pos = ill.get('pos', '') if isinstance(ill, dict) else ''
+                        
+                        target_line = None
+                        
+                        # 方法1：pos 字段匹配段落
+                        if pos:
+                            pos_clean = pos.strip()
+                            # 尝试数字索引匹配（如 "第2段"、"段落2"）
+                            import re
+                            num_match = re.search(r'[第]?(\d+)[段篇]', pos_clean)
+                            if num_match:
+                                idx = int(num_match.group(1)) - 1
+                                if 0 <= idx < len(para_starts):
+                                    target_line = para_starts[idx]
+                            
+                            # 尝试关键词匹配：在段落中找关键词
+                            if target_line is None and len(pos_clean) > 2:
+                                for pi, line_idx in enumerate(para_starts):
+                                    line_text = md_lines[line_idx].lower()
+                                    # 提取关键词（去除数字、符号）
+                                    keywords = re.sub(r'[\d\.\。\、\，]', '', pos_clean).strip()
+                                    if keywords[:4] in line_text:
+                                        target_line = line_idx
+                                        break
+                        
+                        # 方法2：均匀分布（兜底）
+                        if target_line is None:
+                            # 均匀分配到各段落
+                            n_remaining = len(article_images) - len(insert_map)
+                            n_slots = len(para_starts)
+                            if n_slots > 0 and n_remaining > 0:
+                                step = (n_slots - 1) / n_remaining
+                                target_line = para_starts[min(int(len(insert_map) * step), n_slots - 1)]
+                            elif para_starts:
+                                target_line = para_starts[len(insert_map) % len(para_starts)]
+                            else:
+                                target_line = len(md_lines) // 2
+                        
+                        insert_map.append((target_line, img_path))
+                    
+                    # 按行号排序插入点（从后往前插入，避免索引偏移问题）
+                    insert_map.sort(key=lambda x: x[0], reverse=True)
+                    for line_idx, img_path in insert_map:
+                        md_lines.insert(line_idx, f'\n![]({img_path})\n')
+                    
+                    final_content = '\n'.join(md_lines)
+                    print(f"🖼️ 已在正文中插入 {len(article_images)} 个图片（按 pos 匹配段落）")
                     final_content = '\n'.join(md_lines)
                     print(f"🖼️ 已在正文中插入 {len(article_images)} 个图片占位符")
 

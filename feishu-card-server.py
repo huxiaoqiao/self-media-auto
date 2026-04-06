@@ -1,9 +1,14 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """Feishu Card Server - Handles card button events and sends interactive cards."""
 
 import sys, io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+# Only wrap if running in a context that needs it (not in exec tool environment)
+if hasattr(sys.stdout, 'buffer') and not isinstance(sys.stdout, io.TextIOWrapper):
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass  # If wrapping fails, use original stdout
 
 import json
 import subprocess
@@ -45,10 +50,10 @@ load_dotenv()
 TOPIC_MAP = {}
 
 # Thread lock for protecting TOPIC_MAP concurrent access
-TOPIC_MAP_LOCK = threading.Lock()
+TOPIC_MAP_LOCK = threading.RLock()
 
 # Thread lock for protecting STATE_FILE concurrent access
-STATE_FILE_LOCK = threading.Lock()
+STATE_FILE_LOCK = threading.RLock()
 
 # Feishu App Config (from environment variables with fallback)
 APP_ID = os.getenv("FEISHU_APP_ID", "cli_a930dedc42789cd1")
@@ -2008,3 +2013,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
