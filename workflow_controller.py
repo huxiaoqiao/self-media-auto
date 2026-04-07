@@ -462,9 +462,9 @@ class SelfMediaController:
         """
         from datetime import datetime, timedelta
 
-        # 计算时间范围：昨天到今天
+        # 计算时间范围：过去 7 天（前天到 7 天前）
         end_date = datetime.now() - timedelta(days=1)
-        start_date = datetime.now() - timedelta(days=2)
+        start_date = datetime.now() - timedelta(days=7)
         start_time = start_date.strftime("%Y-%m-%d")
         end_time = end_date.strftime("%Y-%m-%d")
 
