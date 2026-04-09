@@ -270,8 +270,12 @@ def build_archive_card(title: str, doc_url: str, topic_id: str, date: str) -> di
     }
 
 
-def build_final_card(image_key: str, title: str, content: str, tags: str, review_id: str, article_image_keys=None) -> dict:
-    """最终稿卡片"""
+def build_final_card(image_key: str, title: str, content: str, tags: str, review_id: str, article_image_keys=None, deai_notes: str = None) -> dict:
+    """最终稿卡片
+    
+    Args:
+        deai_notes: Optional[str], Natural Chinese Protocol 祛AI处理改动说明
+    """
     elements = []
 
     if image_key:
@@ -293,6 +297,14 @@ def build_final_card(image_key: str, title: str, content: str, tags: str, review
     if article_image_keys:
         elements.append({"tag": "hr"})
         elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"🖼️ 文章包含 {len(article_image_keys)} 张专业配图，已插入相应段落"}]})
+
+    # 🔍 祛 AI 味说明区块
+    if deai_notes:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**🔍 Natural Chinese Protocol · 祛AI处理说明**\n\n{deai_notes}"}
+        })
 
     elements.append({"tag": "hr"})
     elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": tags}]})

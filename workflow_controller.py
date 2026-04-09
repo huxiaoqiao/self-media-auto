@@ -1384,7 +1384,26 @@ class SelfMediaController:
             final_content = f"# {title_val}\n\n**[生成超时]**\n\n原文：\n{raw_content[:500]}..."
 
         # ==========================
-        # 3. 输出 Drafts 归档与状态保存
+        # 3. 祛 AI 味处理（Natural Chinese Protocol）
+        # ==========================
+        deai_enabled = os.environ.get("DEAI_ENABLED", "TRUE").upper() == "TRUE"
+        deai_notes = ""
+        if deai_enabled and final_content and api_key and "your_api_key" not in api_key:
+            try:
+                print(f"🔬 [3/4] 正在执行 AI 味祛除...")
+                logger.info("[DEAI] Starting Natural Chinese Protocol treatment")
+                deai_result = self.de_ai_style(final_content, api_key, api_base, mid)
+                if deai_result:
+                    final_content, deai_notes = deai_result
+                    print(f"✅ 祛 AI 味完成：{len(final_content)} 字")
+                    logger.info("[DEAI] DeAI completed: %d chars", len(final_content))
+            except Exception as e:
+                print(f"⚠️ 祛 AI 味处理异常: {e}，跳过此步骤")
+                logger.warning("[DEAI] DeAI failed, proceeding with original: %s", e)
+                deai_notes = ""
+
+        # ==========================
+        # 4. 输出 Drafts 归档与状态保存
         # ==========================
         ts = datetime.now().strftime('%Y%m%d%H%M')
         dr_root = os.path.join(self.workspace, 'drafts', datetime.now().strftime('%Y-%m-%d'))
@@ -1406,6 +1425,13 @@ class SelfMediaController:
             wash_pattern = r"(?m)^(?:【|\*\*)?(?:开篇|正文|收尾|结论|总结|引言|结语|结尾|金句|长文|短视频剧本|脚本|互动标签)(?:】|\*\*)?[：:\s\*]*"
             ac = re.sub(wash_pattern, "", ac).strip()
             vs = re.sub(wash_pattern, "", vs).strip()
+
+        # 兜底：始终从 LLM 产出的第一行提取新标题（去掉 # 标记）
+        if not nt:
+            first_line = final_content.strip().split('\n')[0].strip()
+            nt = re.sub(r'^#+\s*', '', first_line).strip()
+            if nt:
+                logger.info("[REPURPOSE] 从 LLM 输出提取新标题: %s", nt[:40])
 
         ap = os.path.join(dr_root, f"article_{ts}.md")
         with open(ap, "w", encoding='utf-8') as f:
@@ -1438,7 +1464,108 @@ class SelfMediaController:
             state['content_category'] = content_category
             print(f"[REPURPOSE] 📂 文章分类已记录: {content_category}", flush=True)
         logger.info("[REPURPOSE] Saving generated content")
+        # 保存祛 AI 味摘要（如有）
+        if deai_notes:
+            state['deai_notes'] = deai_notes
         self.save_state(state)
+
+    # ==================== 祛 AI 味处理（Natural Chinese Protocol）====================
+    DEAI_PROMPT_TEMPLATE = """你是一个专业的中文文字与文体编辑，负责在**通用中文写作场景**中识别并消除 AI 生成痕迹。
+
+## 核心原则
+1. 忠实保留原文的核心信息与意图
+2. 用自然、地道、具有流线性的表达替换 AI 惯用语
+3. 拒绝碎片化——不要把句子切成干瘪的电报体
+4. 注入人类语感——拥抱认知局限，用自然的不确定感代替绝对化词汇
+
+## AI 痕迹诊断清单
+
+### 一、内容特征模式
+1. **强加宏大叙事**：警惕"技术革新"、"历史里程碑"、"深度赋能"、"深刻反映了"、"重塑了...闭环"
+2. **剥洋葱式解释结构**：警惕"这意味着"、"这表明了"、"换言之"、"简单来说"
+3. **强行升华与八股结尾**：警惕"挑战与机遇并存"、"未来依然可期"、"为我们指明了方向"
+
+### 二、语言与语法模式
+1. **滥用排比与对称结构**：警惕"不仅提升了...优化了...更重塑了"、"这不仅仅是...更是..."
+2. **谓语复杂化**：警惕"扮演着...的关键角色"、"作为...的桥梁"、"标志着"、"呈现出"
+3. **教科书式确信感**：警惕"无疑"、"绝对地"、"完全展现了"、"必然会导致"、"毫无疑问"
+4. **显性语篇标记泛滥**：警惕"值得注意的是"、"不可否认的是"、"综上所述"
+5. **翻译腔框架**：警惕"带来了...的更新"、"具有...的特征"
+6. **代词"它"的滥用**：警惕无生命事物用"它"指代，生造"不再是...而是..."句式
+7. **强加过渡词**：警惕"比较直观的变化是"用于描述不可见逻辑
+
+### 三、格式与排版模式
+1. **段落对称性**：连续段落字数惊人一致、句法结构高度平行
+2. **视觉模板化**：刻板使用表情符号作为段落装饰
+
+## 任务
+
+请对下面的文章进行祛 AI 味处理，返回**处理后的文章**和**改动摘要**。
+
+---
+原文：
+{content}
+---
+
+请以以下 JSON 格式返回（不要输出任何其他内容）：
+{{
+  "cleaned_content": "处理后的文章全文（保持 Markdown 格式）",
+  "summary": [
+    "改动说明1，如：移除 X 处'无疑/绝对'等确信词",
+    "改动说明2，如：消除'值得注意的是'等冗余过渡词 X 处",
+    "改动说明3，如：破除'不仅...更...'机械排比结构 X 处",
+    "改动说明4，如：软化认知边界，保留人类阅读呼吸感",
+    "改动说明5，如：去除八股结尾公式化表述 X 处"
+  ]
+}}
+"""
+
+    def de_ai_style(self, content: str, api_key: str, api_base: str, model_id: str):
+        """
+        Natural Chinese Protocol：消除 AI 生成痕迹
+        返回: (cleaned_content, summary_str) 或 None
+        """
+        import httpx
+
+        # 支持外部配置提示词
+        pm_path = os.path.join(self.workspace, "prompts_manager.json")
+        if os.path.exists(pm_path):
+            with open(pm_path, 'r', encoding='utf-8') as f:
+                conf = json.load(f)
+            deai_prompt = conf.get("deai_prompt", self.DEAI_PROMPT_TEMPLATE)
+        else:
+            deai_prompt = self.DEAI_PROMPT_TEMPLATE
+
+        prompt = deai_prompt.format(content=content)
+
+        with httpx.Client(timeout=120) as cl:
+            r = cl.post(
+                f"{api_base}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model_id,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 8192
+                }
+            )
+            raw = r.json()["choices"][0]["message"]["content"]
+
+        # 提取 JSON
+        # 尝试从 ```json ... ``` 中提取
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+        if not m:
+            m = re.search(r"(\{.*\})", raw, re.DOTALL)
+        if m:
+            data = json.loads(m.group(1))
+            cleaned = data.get("cleaned_content", content)
+            summary_list = data.get("summary", [])
+            summary_str = "\n".join(f"• {s}" for s in summary_list) if summary_list else ""
+            return cleaned, summary_str
+
+        # JSON 解析失败，不做处理
+        logger.warning("[DEAI] JSON parse failed, returning original content")
+        return None
 
     def generate_image(self, prompt, model_type="seedream", size="1024*1024"):
         """
@@ -1645,7 +1772,8 @@ class SelfMediaController:
                 # Xiaohu 将 markdown 图片语法转换为 WECHATIMGPH_N 占位符（无下划线）
                 # 这里替换为带 data-local-path 的真实 <img> 标签
                 if article_images:
-                    for i, img_path in enumerate(article_images):
+                    for i, img_info in enumerate(article_images):
+                        img_path = img_info.get('path', img_info) if isinstance(img_info, dict) else img_info
                         ph = f"WECHATIMGPH_{i + 1}"  # Xiaohu 使用从1开始的计数器
                         tag = f'<img src="XIMGPH_{i}" data-local-path="{_os.path.abspath(img_path)}" style="max-width: 100%; height: auto; display: block; margin: 20px auto;" />'
                         content = content.replace(ph, tag)
@@ -1655,9 +1783,10 @@ class SelfMediaController:
                     lines = content.split('\n')
                     pts = [i for i, l in enumerate(lines) if l.startswith('### ')] or [i for i, l in enumerate(lines) if not l.strip()]
                     pts = sorted(list(set(pts)))
-                    for i, img in enumerate(article_images):
+                    for i, img_info in enumerate(article_images):
+                        img_path = img_info.get('path', img_info) if isinstance(img_info, dict) else img_info
                         p_idx = (i * len(pts)) // len(article_images)
-                        lines.insert(pts[p_idx] + i * 2, f'\n![插图]({_os.path.abspath(img)})\n')
+                        lines.insert(pts[p_idx] + i * 2, f'\n![插图]({_os.path.abspath(img_path)})\n')
                     with open(draft_file, 'w', encoding='utf-8') as f: f.write('\n'.join(lines))
 
             # 执行命令准备
@@ -1800,7 +1929,6 @@ class SelfMediaController:
                         if pos:
                             pos_clean = pos.strip()
                             # 尝试数字索引匹配（如 "第2段"、"段落2"）
-                            import re
                             num_match = re.search(r'[第]?(\d+)[段篇]', pos_clean)
                             if num_match:
                                 idx = int(num_match.group(1)) - 1
