@@ -1327,6 +1327,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
             draft_file = state.get('draft_file', '')
             script_file = state.get('video_script', '')
+            deai_notes = state.get('deai_notes', None)
 
             # 如果路径依然为空,或者文件修改时间在启动之前,说明没写成功
             def is_file_fresh(path, threshold_time):
@@ -1372,7 +1373,8 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     tags="脚本",
                     review_id="script_01",
                     template="orange",
-                    header_title="🎬 脚本审核"
+                    header_title="🎬 脚本审核",
+                    deai_notes=deai_notes
                 )
                 self.send_card(token, script_card)
             else:
@@ -1385,15 +1387,20 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 tags="文章",
                 review_id="article_01",
                 template="blue",
-                header_title="📖 文章审核"
+                header_title="📖 文章审核",
+                deai_notes=deai_notes
             )
             self.send_card(token, article_card)
 
         except Exception as e:
             self.send_text(token, f"⚠️ 改写失败: {str(e)[:100]}")
 
-    def build_review_card_v2(self, cover_path, title, content, tags, review_id, template="blue", header_title=None):
-        """Build review card with anti-fake labels and timestamps."""
+    def build_review_card_v2(self, cover_path, title, content, tags, review_id, template="blue", header_title=None, deai_notes=None):
+        """Build review card with anti-fake labels and timestamps.
+        
+        Args:
+            deai_notes: Optional[str], Natural Chinese Protocol 祛AI处理改动说明
+        """
         CHUNK_SIZE = 800
         paragraphs = []
         if content:
@@ -1408,6 +1415,15 @@ class FeishuHandler(BaseHTTPRequestHandler):
             "text": {"tag": "lark_md", "content": f"**🔥 标题:** {title}\n\n**🏷️ 标签:** {tags}"}
         })
         elements.extend(paragraphs)
+
+        # 🔍 祛 AI 味说明区块（Natural Chinese Protocol 处理结果）
+        if deai_notes:
+            elements.append({"tag": "hr"})
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**🔍 Natural Chinese Protocol · 祛AI处理说明**\n\n{deai_notes}"}
+            })
+
         elements.append({"tag": "hr"})
         elements.append({
             "tag": "note",
