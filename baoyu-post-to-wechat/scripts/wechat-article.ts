@@ -293,33 +293,95 @@ async function selectAndReplacePlaceholder(session: ChromeSession, placeholder: 
         if (!editor) return false;
 
         const placeholder = ${JSON.stringify(placeholder)};
-        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null, false);
-        let node;
 
-        while ((node = walker.nextNode())) {
-          const text = node.textContent || '';
+        // Phase 1: Normalize the DOM to merge adjacent text nodes that may have
+        // been split by ProseMirror after previous image paste operations.
+        editor.normalize();
+
+        // Phase 2: Try single-node search (fast path)
+        function searchSingleNode() {
+          const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null, false);
+          let node;
+          while ((node = walker.nextNode())) {
+            const text = node.textContent || '';
+            let searchStart = 0;
+            let idx;
+            while ((idx = text.indexOf(placeholder, searchStart)) !== -1) {
+              const afterIdx = idx + placeholder.length;
+              const charAfter = text[afterIdx];
+              if (charAfter === undefined || !/\\d/.test(charAfter)) {
+                node.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                const range = document.createRange();
+                range.setStart(node, idx);
+                range.setEnd(node, idx + placeholder.length);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                return true;
+              }
+              searchStart = afterIdx;
+            }
+          }
+          return false;
+        }
+
+        if (searchSingleNode()) return true;
+
+        // Phase 3: Cross-node search fallback — the placeholder may still span
+        // multiple text nodes (e.g. inside different <span> wrappers that
+        // normalize() cannot merge because they are not siblings of the same parent).
+        function searchCrossNode() {
+          const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null, false);
+          const textNodes = [];
+          let n;
+          while ((n = walker.nextNode())) textNodes.push(n);
+
+          // Build a concatenated string and track node boundaries
+          let fullText = '';
+          const map = []; // { node, startInFull, length }
+          for (const tn of textNodes) {
+            const t = tn.textContent || '';
+            map.push({ node: tn, startInFull: fullText.length, length: t.length });
+            fullText += t;
+          }
+
           let searchStart = 0;
           let idx;
-          // Search for exact match (not prefix of longer placeholder like XIMGPH_1 in XIMGPH_10)
-          while ((idx = text.indexOf(placeholder, searchStart)) !== -1) {
+          while ((idx = fullText.indexOf(placeholder, searchStart)) !== -1) {
             const afterIdx = idx + placeholder.length;
-            const charAfter = text[afterIdx];
-            // Exact match if next char is not a digit
+            const charAfter = fullText[afterIdx];
             if (charAfter === undefined || !/\\d/.test(charAfter)) {
-              node.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-              const range = document.createRange();
-              range.setStart(node, idx);
-              range.setEnd(node, idx + placeholder.length);
-              const sel = window.getSelection();
-              sel.removeAllRanges();
-              sel.addRange(range);
-              return true;
+              // Find start node/offset
+              let startNode, startOffset, endNode, endOffset;
+              for (const m of map) {
+                const mEnd = m.startInFull + m.length;
+                if (startNode === undefined && idx >= m.startInFull && idx < mEnd) {
+                  startNode = m.node;
+                  startOffset = idx - m.startInFull;
+                }
+                if (afterIdx >= m.startInFull && afterIdx <= mEnd) {
+                  endNode = m.node;
+                  endOffset = afterIdx - m.startInFull;
+                  break;
+                }
+              }
+              if (startNode && endNode) {
+                startNode.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                const range = document.createRange();
+                range.setStart(startNode, startOffset);
+                range.setEnd(endNode, endOffset);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                return true;
+              }
             }
             searchStart = afterIdx;
           }
+          return false;
         }
-        return false;
+
+        return searchCrossNode();
       })()
     `,
     returnByValue: true,
@@ -716,9 +778,17 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
           const img = contentImages[i]!;
           console.log(`[wechat] [${i + 1}/${contentImages.length}] Processing: ${img.placeholder}`);
 
-          const found = await selectAndReplacePlaceholder(session, img.placeholder);
+          // Retry up to 3 times — after image paste the editor DOM may need
+          // extra time to stabilise before the next placeholder is searchable.
+          let found = false;
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            found = await selectAndReplacePlaceholder(session, img.placeholder);
+            if (found) break;
+            console.log(`[wechat] Placeholder not found on attempt ${attempt}, waiting for DOM to stabilise...`);
+            await sleep(2000);
+          }
           if (!found) {
-            console.warn(`[wechat] Placeholder not found: ${img.placeholder}`);
+            console.warn(`[wechat] Placeholder not found after 3 attempts: ${img.placeholder}`);
             continue;
           }
 
@@ -734,7 +804,7 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
 
           console.log('[wechat] Pasting image...');
           await pasteFromClipboardInEditor(session);
-          await sleep(3000);
+          await sleep(4000); // Increased from 3000 — give ProseMirror time to fully re-render DOM
           await removeExtraEmptyLineAfterImage(session);
         }
         console.log('[wechat] All images inserted.');
