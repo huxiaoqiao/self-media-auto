@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{TITLE}} - 微信排版预览</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: #f0f0f0;
+    min-height: 100vh;
+}
+.toolbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: rgba(255,255,255,0.95);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid #e0e0e0;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 100;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+.toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+.toolbar-info {
+    font-size: 13px;
+    color: #666;
+}
+.toolbar-info span {
+    margin-right: 12px;
+}
+.toolbar-info .theme-name {
+    background: #f5f5f5;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-weight: 500;
+    color: #333;
+}
+.copy-btn {
+    padding: 10px 24px;
+    background: #07c160;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 1px;
+}
+.copy-btn:hover { background: #06ae56; transform: translateY(-1px); }
+.copy-btn:active { transform: translateY(0); }
+.copy-btn.copied {
+    background: #34c759;
+}
+.phone-frame {
+    max-width: 415px;
+    margin: 76px auto 40px;
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.1);
+    overflow: hidden;
+}
+.phone-header {
+    background: #ededed;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: #999;
+    border-bottom: 1px solid #e0e0e0;
+}
+.article-content {
+    padding: 20px;
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+/* 隐藏的纯微信 HTML，用于复制 */
+#wechatHtml {
+    position: absolute;
+    left: -9999px;
+    top: -9999px;
+}
+/* ── Font Size Selector ── */
+.font-size-selector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin: 12px auto;
+    padding: 8px 0;
+    max-width: 415px;
+}
+.fs-label {
+    font-size: 13px;
+    color: #999;
+}
+.fs-btn {
+    padding: 4px 12px;
+    border: 1px solid #ddd;
+    border-radius: 16px;
+    background: #fff;
+    font-size: 13px;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+}
+.fs-btn:hover {
+    border-color: #07C160;
+    color: #07C160;
+}
+.fs-btn.active {
+    background: #07C160;
+    border-color: #07C160;
+    color: #fff;
+}
+@media (max-width: 480px) {
+    .phone-frame {
+        margin: 60px 0 20px;
+        border-radius: 0;
+        box-shadow: none;
+    }
+    .toolbar {
+        padding: 8px 12px;
+    }
+    .copy-btn {
+        padding: 8px 16px;
+        font-size: 13px;
+    }
+}
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+    <div class="toolbar-left">
+        <div class="toolbar-info">
+            <span class="theme-name">{{THEME_NAME}}</span>
+            <span>{{WORD_COUNT}} 字</span>
+        </div>
+    </div>
+    <button class="copy-btn" onclick="copyToWechat()">复制到微信</button>
+</div>
+
+<div class="font-size-selector">
+    <span class="fs-label">字号</span>
+    <button class="fs-btn active" data-size="15" onclick="switchFontSize(15)">15px</button>
+    <button class="fs-btn" data-size="16" onclick="switchFontSize(16)">16px</button>
+</div>
+
+<div class="phone-frame">
+    <div class="phone-header">微信公众号预览</div>
+    <div class="article-content" id="articleContent">
+{{ARTICLE_HTML}}
+    </div>
+</div>
+
+<!-- 隐藏区域：存放纯微信 HTML（不含预览壳样式），复制时用这个 -->
+<div id="wechatHtml">
+{{ARTICLE_HTML}}
+</div>
+
+<script>
+/**
+ * HTML Sanitizer for WeChat Editor Compatibility
+ * Converts Xiaohu's <section> + flex CSS to WeChat-compatible HTML
+ */
+function sanitizeHtmlForWechat(html) {
+    let result = html;
+
+    // 1. Convert section with flex to table-based layout
+    // Pattern: <section style="...display:flex...">...</section>
+    result = result.replace(/<section\s+([^>]*)style="([^"]*display:\s*flex[^"]*)"([^>]*)>([\s\S]*?)<\/section>/gi, function(match, before, style, after, content) {
+        // Check if it's horizontal flex (row or default)
+        const isRow = /flex-direction:\s*row/i.test(style) || !/flex-direction:\s*column/i.test(style);
+
+        if (isRow) {
+            // Convert to table structure
+            return '<table style="width:100%;border-collapse:collapse;"><tbody><tr><td>' + content + '</td></tr></tbody></table>';
+        } else {
+            // Column flex - remove flex styling only
+            const cleanedStyle = style.replace(/display:\s*flex[^;]*;?/gi, '').replace(/;{2,}/g, ';').replace(/^;|;$/g, '');
+            return '<section ' + before + 'style="' + cleanedStyle + '"' + after + '>' + content + '</section>';
+        }
+    });
+
+    // 2. Remove unsupported CSS properties
+    const unsupportedPatterns = [
+        /display:\s*(flex|grid|-webkit-flex)[^;"]*;?/gi,
+        /flex-direction:[^;"]*;?/gi,
+        /flex-wrap:[^;"]*;?/gi,
+        /justify-content:[^;"]*;?/gi,
+        /align-items:[^;"]*;?/gi,
+        /align-content:[^;"]*;?/gi,
+        /gap:[^;"]*;?/gi,
+        /grid-template-columns:[^;"]*;?/gi,
+        /grid-template-rows:[^;"]*;?/gi,
+        /user-select:\s*none[^;"]*;?/gi,
+        /position:\s*fixed[^;"]*;?/gi,
+        /position:\s*absolute[^;"]*;?/gi,
+        /left:\s*-9999px[^;"]*;?/gi,
+        /top:\s*-9999px[^;"]*;?/gi,
+        /backdrop-filter:[^;"]*;?/gi,
+        /(-webkit-)?backdrop-filter:[^;"]*;?/gi
+    ];
+
+    for (const pattern of unsupportedPatterns) {
+        result = result.replace(pattern, '');
+    }
+
+    // 3. Convert section-based callouts to blockquote
+    result = result.replace(/<section\s+([^>]*)style="([^"]*(?:border-left|border-color)[^"]*)"([^>]*)>([\s\S]*?)<\/section>/gi, function(match, before, style, after, content) {
+        const hasBorder = /border-left|border-color/i.test(style);
+        if (hasBorder) {
+            const borderMatch = style.match(/border-left:\s*([^;]+)/i) || style.match(/border-color:\s*([^;]+)/i);
+            const bgMatch = style.match(/background:\s*([^;]+)/i);
+            const borderColor = borderMatch ? borderMatch[1].trim() : '#ccc';
+            const bgColor = bgMatch ? bgMatch[1].trim() : 'transparent';
+            return '<blockquote style="border-left:' + borderColor + ';background:' + bgColor + ';padding:10px 15px;margin:10px 0;">' + content + '</blockquote>';
+        }
+        return match;
+    });
+
+    // 4. Clean up empty style attributes
+    result = result.replace(/\s*style="\s*"/gi, '');
+    result = result.replace(/style="\s*;(?=["'])/gi, 'style="');
+    result = result.replace(/(<[^>]+)\s+style=""\s*([^>]*>)/gi, '$1$2');
+
+    // 5. Remove empty paragraphs and sections
+    result = result.replace(/<p[^>]*>\s*<\/p>/gi, '');
+    result = result.replace(/<section[^>]*>\s*<\/section>/gi, '');
+    result = result.replace(/<section[^>]*>\s+<\/section>/gi, '');
+
+    // 6. Remove multiple consecutive br tags
+    result = result.replace(/(<br\s*\/?>\s*){3,}/gi, '<br>');
+
+    // 7. Remove zero-width characters
+    result = result.replace(/[\u200B-\u200D\uFEFF]/g, '');
+
+    return result;
+}
+
+/**
+ * Generate CF_HTML header for Windows clipboard
+ */
+function wrapForClipboard(html) {
+    const fragment = '<!--StartFragment-->' + html + '<!--EndFragment-->';
+    const fullHtml = '<html><body>' + fragment + '</body></html>';
+
+    const header = 'Version:0.9\r\n';
+    const headerLength = header.length;
+
+    const htmlStart = fullHtml.indexOf('<html>');
+    const fragmentStart = fullHtml.indexOf('<!--StartFragment-->');
+    const fragmentEnd = fullHtml.indexOf('<!--EndFragment-->') + '<!--EndFragment-->'.length;
+
+    const startOffset = headerLength + htmlStart;
+    const endOffset = headerLength + fullHtml.length;
+
+    const pad = function(n) { return String(n).padStart(10, '0'); };
+
+    const cfHeader = 'Version:0.9\r\n' +
+        'StartHTML:' + pad(startOffset) + '\r\n' +
+        'EndHTML:' + pad(endOffset) + '\r\n' +
+        'StartFragment:' + pad(headerLength + fragmentStart) + '\r\n' +
+        'EndFragment:' + pad(headerLength + fragmentEnd) + '\r\n';
+
+    return cfHeader + fullHtml;
+}
+
+function switchFontSize(size) {
+    // 更新按钮状态
+    document.querySelectorAll('.fs-btn').forEach(function(btn) {
+        if (parseInt(btn.dataset.size) === size) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+
+    // 修改可见预览区和隐藏复制区的 p 标签
+    ['articleContent', 'wechatHtml'].forEach(function(id) {
+        var container = document.getElementById(id);
+        if (!container) return;
+        container.querySelectorAll('p').forEach(function(p) {
+            var currentSize = parseInt(window.getComputedStyle(p).fontSize);
+            if (currentSize >= 14 && currentSize <= 16) {
+                p.style.fontSize = size + 'px';
+                p.style.lineHeight = size === 16 ? '1.75' : '1.8';
+            }
+        });
+        // 修改列表项文字
+        container.querySelectorAll('[style*="font-size:15px"]').forEach(function(el) {
+            if (el.tagName === 'SPAN' || el.tagName === 'SECTION') {
+                el.style.fontSize = size + 'px';
+            }
+        });
+    });
+
+    // 保存选择到 localStorage
+    localStorage.setItem('wechat-format-fontsize', size);
+}
+
+// 页面加载时恢复上次选择
+document.addEventListener('DOMContentLoaded', function() {
+    var saved = localStorage.getItem('wechat-format-fontsize');
+    if (saved && saved !== '15') {
+        switchFontSize(parseInt(saved));
+    }
+});
+
+function copyToWechat() {
+    const source = document.getElementById('wechatHtml');
+
+    // 🔑 关键修复：先 sanitize HTML，去掉微信不支持的标签和CSS
+    const rawHtml = source.innerHTML;
+    const sanitizedHtml = sanitizeHtmlForWechat(rawHtml);
+
+    // 生成带 CF_HTML 头的剪贴板内容
+    const cfHtml = wrapForClipboard(sanitizedHtml);
+
+    // 临时让元素可见（否则某些浏览器不允许复制隐藏元素）
+    source.style.position = 'fixed';
+    source.style.left = '0';
+    source.style.top = '0';
+    source.style.opacity = '0.01';
+    source.style.width = '375px';
+
+    // 创建范围
+    const range = document.createRange();
+    range.selectNodeContents(source);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    try {
+        // 尝试 1: 使用 execCommand 复制
+        document.execCommand('copy');
+        showCopySuccess();
+    } catch(e) {
+        // 尝试 2: 使用 Clipboard API + CF_HTML
+        try {
+            const blob = new Blob([cfHtml], { type: 'text/html' });
+            const item = new ClipboardItem({ 'text/html': blob });
+            navigator.clipboard.write([item]).then(function() {
+                showCopySuccess();
+            }).catch(function() {
+                // 尝试 3: 直接复制纯HTML
+                fallbackCopy(sanitizedHtml);
+            });
+        } catch(e2) {
+            fallbackCopy(sanitizedHtml);
+        }
+    }
+
+    // 恢复隐藏
+    source.style.position = 'absolute';
+    source.style.left = '-9999px';
+    source.style.top = '-9999px';
+    source.style.opacity = '';
+    source.style.width = '';
+
+    sel.removeAllRanges();
+}
+
+function showCopySuccess() {
+    const btn = document.querySelector('.copy-btn');
+    btn.textContent = '已复制!';
+    btn.classList.add('copied');
+    setTimeout(function() {
+        btn.textContent = '复制到微信';
+        btn.classList.remove('copied');
+    }, 2500);
+}
+
+function fallbackCopy(html) {
+    // 最终备选：创建临时textarea复制纯文本
+    const textarea = document.createElement('textarea');
+    textarea.value = html;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        document.execCommand('copy');
+        showCopySuccess();
+    } catch(e) {
+        alert('复制失败，请手动选中文章内容复制');
+    }
+    document.body.removeChild(textarea);
+}
+</script>
+</body>
+</html>

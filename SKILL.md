@@ -84,7 +84,7 @@ description: |
 
 **关键理解**：这是一个线性流程，**飞书聊天窗口是用户唯一的审核和控制终端**。AI 必须确保每一个 [ACTION_REQUIRED] 节点都提供了足够的预览素材（链接或图片）。
 
-**飞书卡片服务器**：`feishu-card-server.py` 提供基于卡片的交互式选题选择和状态通知，每 5 秒轮询一次飞书事件。启动方式：`python feishu-card-server.py` 或 `start_card_server.bat`。
+**飞书卡片服务器**：`scripts/feishu/feishu-card-server.py` 提供基于卡片的交互式选题选择和状态通知，每 5 秒轮询一次飞书事件。启动方式：`python scripts/feishu/feishu-card-server.py` 或 `scripts/feishu/start_card_server.bat`。
 
 ---
 
@@ -309,8 +309,8 @@ python workflow_controller.py post [--method api|browser]
 ```
 
 **发布方式**：
-- `--method api` (默认)：使用微信开发接口，需配置 AppID。
-- `--method browser`：使用高级 CDP 驱动的浏览器自动化，支持**原生文件注入**、**封面 2.35:1 比例自动切换**以及**远程扫码登录**。
+- `--method browser` (默认)：使用高级 CDP 驱动的浏览器自动化，支持**原生文件注入**、**封面 2.35:1 比例自动切换**以及**远程扫码登录**。
+- `--method api`：使用微信开发接口，需配置 AppID。
   - **登录流程**：检测到未登录时自动截取公众号后台登录二维码，通过 `[FEISHU_IMAGE_REQUIRED]` 标记触发 OpenClaw 将二维码图片推送到飞书聊天窗口
   - **用户操作**：用户在飞书中收到二维码图片后扫码登录，脚本自动检测到登录成功后继续发布流程
   - **超时处理**：最长等待 5 分钟，超时后流程中断需重新执行
@@ -336,8 +336,8 @@ python workflow_controller.py publish [--model seedream] [--method api|browser]
 
 | 参数 | 方式 | 前置条件 |
 |------|------|----------|
-| `--method api`（默认） | API 自动推送 | 需配置 `WECHAT_APP_ID` / `WECHAT_SECRET` |
-| `--method browser` | 浏览器 CDP 模拟 | 具备**高精度比例切换 (2.35:1)** 和原生文件注入，更稳定 |
+| `--method browser`（默认） | 浏览器 CDP 模拟 | 具备**高精度比例切换 (2.35:1)** 和原生文件注入，更稳定 |
+| `--method api` | API 自动推送 | 需配置 `WECHAT_APP_ID` / `WECHAT_SECRET` |
 
 #### 生图规格
 
@@ -477,7 +477,7 @@ AI: python workflow_controller.py repurpose --id 3
 
 用户：确认，写得很好
 
-AI: python workflow_controller.py publish --model wan --method api
+AI: python workflow_controller.py publish --model wan --method browser
     → 生成封面图 + 5 张文中插图
     → 推送到微信公众号草稿箱
     → 输出完成报告
@@ -517,37 +517,69 @@ AI: python workflow_controller.py from-video --url "https://v.douyin.com/xxxx"
 ## 7. 文件结构说明
 
 ```
-self-media-workflow/
-├── workflow_controller.py      # 中央调度器
-├── feishu-card-server.py       # 飞书卡片服务器（事件轮询 + 卡片交互）
-├── poll-card-event.py          # 飞书事件轮询脚本
+self-media-auto/
+├── SKILL.md                    # 本文件（技能入口）
+├── workflow_controller.py       # 中央调度器（兼容层 wrapper）
+├── README.md                   # 项目说明
 ├── .env                        # API 密钥配置（不提交到 git）
 ├── .env.example                # .env 配置模板
 ├── .workflow_state.json        # 工作流状态（运行时生成）
-├── integrations/               # 外部集成模块
-│   ├── wechat_topic_fetcher.py # 微信选题获取
-│   ├── wewrite_engine.py       # WeWrite 改写引擎
-│   └── xiaohu_formatter.py     # 小虎排版格式化
-├── baoyu-post-to-wechat/       # 公众号发布技能（v1.56.1）
-├── baoyu-cover-image/          # 封面图生成技能（v1.56.1）
-├── baoyu-article-illustrator/  # 文章插图技能
-├── url-reader-0.1.1/           # 网页内容提取工具
-├── douyin-download-1.2.0/      # 抖音视频下载引擎
-├── xiaohu-wechat-format/       # 小虎微信排版
-├── drafts/                     # 改写草稿输出目录
-│   └── 2024-01-15/
-│       └── topic-id/
-│           ├── script.md       # 短视频脚本
-│           └── article.md      # 公众号长文
-├── covers/                     # 封面图输出目录
-│   └── topic-id/
-│       ├── cover.png           # 封面图
-│       └── img-01.png...       # 文中插图
+├── scripts/
+│   ├── workflow/               # 工作流控制器
+│   │   └── workflow_controller.py  # 实际的工作流调度器
+│   ├── posting/                # 发布模块（公众号）
+│   │   ├── wechat-article.ts  # Browser 模式发布
+│   │   ├── wechat-api.ts      # API 模式发布
+│   │   ├── wechat-extend-config.ts
+│   │   ├── copy-to-clipboard.ts
+│   │   ├── cdp.ts
+│   │   ├── package.json        # npm 依赖配置
+│   │   └── vendor/             # baoyu-md 渲染引擎
+│   ├── formatting/            # 排版模块（Xiaohu）
+│   │   ├── format.py          # 排版核心脚本
+│   │   ├── html-sanitizer.ts  # 🔑 微信剪贴板格式修复
+│   │   ├── themes/            # 30+ 主题文件
+│   │   └── templates/          # gallery.html, preview.html
+│   ├── feishu/                # 飞书集成模块
+│   │   ├── feishu-card-server.py  # 卡片服务器
+│   │   ├── send_feishu_card.py    # 卡片发送
+│   │   ├── poll-card-event.py      # 事件轮询
+│   │   ├── send_topics.py          # 选题发送
+│   │   └── start_card_server.bat   # 启动脚本
+│   ├── search/                 # 搜索模块
+│   │   └── search_engine.py
+│   ├── setup/                 # 安装脚本
+│   │   ├── setup.bat
+│   │   └── setup.ps1
+│   ├── modules/               # 代码模块（被 import）
+│   │   ├── config/            # 配置模块
+│   │   │   └── wewrite_config.py
+│   │   ├── integrations/      # 集成模块
+│   │   │   ├── wechat_topic_fetcher.py
+│   │   │   ├── wewrite_engine.py
+│   │   │   └── xiaohu_formatter.py
+│   │   ├── utils/             # 工具函数
+│   │   │   └── logger_config.py
+│   │   ├── wewrite/           # WeWrite 改写引擎
+│   │   ├── url-reader-0.1.1/  # 网页内容提取工具
+│   │   └── douyin-download-1.2.0/  # 抖音视频下载引擎
+│   └── pyproject.toml         # Python 依赖配置
+├── references/                 # 参考文档
+│   ├── posting/
+│   │   ├── article-posting.md
+│   │   └── image-text-posting.md
+│   ├── formatting/
+│   │   └── themes-guide.md
+│   └── prompts/
+│       └── prompts_manager.json  # 提示词管理
 ├── assets/                     # 静态资源
-│   └── login_qr.png            # 微信扫码登录二维码
+├── drafts/                     # 改写草稿输出目录
 ├── logs/                       # 日志文件目录
 ├── tests/                      # 单元测试
-└── SKILL.md                    # 本文件
+└── .deprecated/                # 废弃但保留的旧模块
+    ├── baoyu-article-illustrator/
+    ├── baoyu-cover-image/
+    └── huashu-proofreading/
 ```
 
 ---
@@ -580,11 +612,12 @@ self-media-workflow/
 
 ## 9. 参考资源
 
+- `scripts/posting/` — 公众号发布模块
+- `scripts/formatting/` — Xiaohu 排版模块
+- `references/` — 详细参考文档
 - `douyin-download-1.2.0/` — 抖音视频下载与提取引擎
 - `url-reader-0.1.1/` — 通用网页内容提取工具
-- `baoyu-cover-image/` — 封面图生成技能（如需要独立调用）
-- `baoyu-post-to-wechat/` — 公众号发布技能
-- `prompts.md` — 改写提示词模板
+- `wewrite/` — WeWrite 改写引擎
 
 ---
 

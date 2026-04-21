@@ -57,3 +57,6 @@ output/
 config.json
 docs/
 .feishu_server_lock
+.deprecated/
+docs
+logs
