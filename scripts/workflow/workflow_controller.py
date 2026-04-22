@@ -1662,14 +1662,22 @@ class SelfMediaController:
 
             # 执行命令准备
             import shutil
+            import subprocess
             bun_path = shutil.which("bun") or shutil.which("bun.exe")
-            npx_cmd = "npx.cmd" if _os.name == "nt" else "npx"
+            # Use full path for npx on Linux
+            npx_path = shutil.which("npx") or (shutil.which("npx.cmd") if _os.name == "nt" else None)
+            if not npx_path:
+                # Try nvm paths
+                nvm_npm = _os.path.expanduser("~/.nvm/versions/node/v22.22.2/bin/npx")
+                if _os.path.exists(nvm_npm):
+                    npx_path = nvm_npm
+            npx_cmd = npx_path if npx_path else ("npx.cmd" if _os.name == "nt" else "npx")
             baoyu_dir = _os.path.join(self.workspace, "scripts", "posting")
             
             THEMES = {"hardcore": "modern", "insight": "grace", "news": "default", "emotional": "grace", "risk": "modern", "tool": "simple", "growth": "simple"}
             wechat_theme = THEMES.get(state.get('content_category', ''), _os.environ.get("WECHAT_THEME", "default"))
             
-            script = _os.path.join(baoyu_dir, "scripts", "wechat-article.ts" if method == "browser" else "wechat-api.ts")
+            script = _os.path.join(baoyu_dir, "wechat-article.ts" if method == "browser" else "wechat-api.ts")
             args = [bun_path, script] if bun_path else [npx_cmd, "-y", "bun", script]
 
             if is_html:
@@ -1678,7 +1686,9 @@ class SelfMediaController:
                 # HTML 文件内的图片已经在 post_to_wechat 开头处理过了（IMG placeholder 替换）
                 # cover 单独传
             else:
-                args.extend(["--markdown", draft_file, "--theme", wechat_theme])
+                # wechat-api.ts expects positional file path, not --markdown flag
+                args.append(draft_file)
+                args.extend(["--theme", wechat_theme])
             if cover_path and _os.path.exists(cover_path): args.extend(["--cover", _os.path.abspath(cover_path)])
             if title: args.extend(["--title", title])
 
@@ -1934,3 +1944,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
