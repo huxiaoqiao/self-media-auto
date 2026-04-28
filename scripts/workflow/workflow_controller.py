@@ -1438,7 +1438,7 @@ class SelfMediaController:
         logger.warning("[DEAI] JSON parse failed, returning original content")
         return None
 
-    def generate_image(self, prompt, model_type="seedream", size="1024*1024"):
+    def generate_image(self, prompt, model_type="openai", size="1024x1024"):
         """
         集成多生图引擎支持
         """
@@ -1473,6 +1473,38 @@ class SelfMediaController:
                 return img_url
             except Exception as e:
                 print(f"[ERROR] Volcengine generation failed: {e}")
+                logger.error("[VISUALS] Save failed: %s", e, exc_info=True)
+                return None
+        elif model_type == "openai":
+            api_key = os.getenv("OPENAI_IMAGE_API_KEY", "")
+            base_url = os.getenv("OPENAI_IMAGE_BASE_URL", "https://api.openai.com/v1")
+            if not api_key: 
+                logger.error("OPENAI_IMAGE_API_KEY 未配置")
+                return None
+            
+            url = f"{base_url}/images/generations"
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+            # size e.g. "1024x1024" or "1024*1024" -> "1024x1024"
+            formatted_size = size.replace("*", "x")
+            data = {
+                "model": "gpt-image-2",
+                "prompt": prompt,
+                "n": 1,
+                "size": formatted_size,
+                "response_format": "url"
+            }
+            try:
+                print(f"[视觉工程] 正在通过 OpenAI 接口调用渲染 {formatted_size} 比例资产...")
+                logger.info("[VISUALS] Calling OpenAI API for image generation")
+                r = requests.post(url, headers=headers, json=data, timeout=60)
+                resp = r.json()
+                img_url = resp.get("data", [{}])[0].get("url")
+                if not img_url:
+                    print(f"[ERROR] OpenAI API Response: {resp}")
+                    logger.error("[VISUALS] Save failed, no url in response: %s", resp)
+                return img_url
+            except Exception as e:
+                print(f"[ERROR] OpenAI generation failed: {e}")
                 logger.error("[VISUALS] Save failed: %s", e, exc_info=True)
                 return None
         else:
@@ -1559,7 +1591,7 @@ class SelfMediaController:
             logger.error("视觉分析异常: %s", e)
             return None
 
-    def run_visuals(self, model_type="seedream"):
+    def run_visuals(self, model_type="openai"):
         """钢铁意志视觉引擎：绝对不中断，成一张推一张"""
         logger.info("启动 run_visuals | model=%s", model_type)
         state = self.load_state()
@@ -1600,8 +1632,8 @@ class SelfMediaController:
             for i, info in enumerate(ills, 1):
                 p = info.get("prompt", "")
                 if not p: continue
-                style = plan.get("cover", {}).get('rendering', 'flat-vector')
-                p = f"{p}, style: {style}, minimalism, studio light, ultra hd"
+                # style = plan.get("cover", {}).get('rendering', 'flat-vector')
+                # p = f"{p}, style: {style}, minimalism, studio light, ultra hd"
                 ratio = info.get("ratio", "1:1")
                 size = ratio_map.get(ratio, "1920x1920")
                 print(f"🖼️ [进度 {i}/{len(ills)}] 启动渲染 ({ratio})...", flush=True)
@@ -1908,7 +1940,7 @@ class SelfMediaController:
             print(f"\n⚠️ 所有草稿发布均失败，请检查日志")
             return False
 
-    def run_publish(self, model_type="seedream", method="api"):
+    def run_publish(self, model_type="openai", method="api"):
         logger.info("启动 run_publish | model=%s | method=%s", model_type, method)
         if self.run_visuals(model_type=model_type):
             return self.run_post(method=method)
@@ -1919,7 +1951,7 @@ def main():
     parser = argparse.ArgumentParser(description="自媒体工作流调度器")
     parser.add_argument('action', choices=['setup', 'pre_discovery', 'discovery', 'next', 'from-article', 'from-video', 'repurpose', 'visuals', 'post', 'publish', 'status', 'sync'], help="动作")
     parser.add_argument('--keyword', type=str); parser.add_argument('--url', type=str); parser.add_argument('--id', type=str)
-    parser.add_argument('--model', default='seedream'); parser.add_argument('--method', default='browser')
+    parser.add_argument('--model', default='openai'); parser.add_argument('--method', default='browser')
     parser.add_argument('--script', type=str); parser.add_argument('--article', type=str)
     parser.add_argument('--refresh', action='store_true', default=True, help="强制刷新（默认行为）")
     parser.add_argument('--last_id', type=str, help="游标分页用的 last_id")
