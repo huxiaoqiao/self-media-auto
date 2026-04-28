@@ -266,13 +266,24 @@ class FeishuHandler(BaseHTTPRequestHandler):
         event_header = data.get('header', {})
         event_type = event_header.get('event_type') or data.get('type')
 
-        # 兼容两种常见格式:飞书 1.0 事件头和 2.0 嵌套结构
+        # 兼容多种格式的 action value 提取
+        # 格式1: 顶层 action.value (OpenClaw 转换后)
+        # 格式2: event.action.value (飞书原始嵌套)
+        # 格式3: event.body.action.value (更深嵌套)
         action_value = data.get('action', {}).get('value')
         event_body = data.get('event', {})
 
         if not action_value:
-            # 尝试从老版 event 结构中提取
+            # 尝试从 event 结构中提取
             action_value = event_body.get('action', {}).get('value')
+
+        if not action_value:
+            # 尝试从更深层结构提取
+            action_value = event_body.get('body', {}).get('action', {}).get('value')
+
+        if not action_value:
+            # 记录原始数据结构以便调试
+            logger.warning(f"[EVENT] 无法提取 action_value, data keys: {list(data.keys())}")
 
         if action_value:
             logger.info("[EVENT] Card action detected: action_value=%s", str(action_value)[:50])
@@ -551,6 +562,51 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 except (ValueError, IndexError):
                     pass
 
+            # 2b. 如果是 URL 且 TOPIC_MAP 和数字索引都没中,则在 candidates 中查找匹配的 URL
+            if not updated and topic_id_str.startswith('http'):
+                candidates = state.get('last_candidates', [])
+                # 提取 topic_id 的关键参数用于匹配
+                import urllib.parse
+                try:
+                    parsed_topic = urllib.parse.urlparse(topic_id_str)
+                    topic_params = urllib.parse.parse_qs(parsed_topic.query)
+                    topic_sn = topic_params.get('sn', [''])[0]
+                    topic_mid = topic_params.get('mid', [''])[0]
+                except:
+                    topic_sn = topic_mid = ''
+                
+                for c in candidates:
+                    c_id = c.get('id', '')
+                    # 精确匹配 或 关键参数匹配 (sn+mid)
+                    if c_id == topic_id_str or c_id.startswith(topic_id_str):
+                        state['topic_context'] = {
+                            'id': c.get('id', ''),
+                            'title': c.get('title', ''),
+                            'source': c.get('source', ''),
+                            'author': c.get('author', ''),
+                            'score': c.get('score', '')
+                        }
+                        updated = True
+                        print(f"[DEBUG] Updated topic_context via URL match in candidates: {c.get('title', '')[:50]}", flush=True)
+                        break
+                    # 备用:通过 sn+mid 匹配
+                    if topic_sn and topic_mid:
+                        try:
+                            parsed_c = urllib.parse.urlparse(c_id)
+                            c_params = urllib.parse.parse_qs(parsed_c.query)
+                            if c_params.get('sn', [''])[0] == topic_sn and c_params.get('mid', [''])[0] == topic_mid:
+                                state['topic_context'] = {
+                                    'id': c.get('id', ''),
+                                    'title': c.get('title', ''),
+                                    'source': c.get('source', ''),
+                                    'author': c.get('author', ''),
+                                    'score': c.get('score', '')
+                                }
+                                updated = True
+                                print(f"[DEBUG] Updated topic_context via sn+mid match: {c.get('title', '')[:50]}", flush=True)
+                                break
+                        except: pass
+
             # 3. 如果还是没中,且是 URL
             if not updated and topic_id_str.startswith('http'):
                 state['topic_context'] = {
@@ -639,7 +695,12 @@ class FeishuHandler(BaseHTTPRequestHandler):
             logger.debug("[ROUTE] Cleaned action_value: %s", str(action_value)[:50])
             # Robust splitting: handle cases where action_value might still have leftover quotes or escapes
             if isinstance(action_value, str):
-                action_value = action_value.replace('"', '').replace('\\', '').strip()
+                action_value = action_value.replace('"', '').strip()
+                # Decode unicode escapes like \\u0026 -> &
+                try:
+                    action_value = action_value.encode('utf-8').decode('unicode_escape')
+                except Exception:
+                    pass
 
             parts = action_value.split('_', 1)
             action_type = parts[0] if parts else 'unknown'
@@ -717,7 +778,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 mtype = action_type.replace('retry_visual_', '')
                 logger.info("[ROUTE] Action: retry_visual - model=%s", mtype)
                 self.send_text(token, f"🔄 正在尝试使用 [{mtype}] 引擎重新绘图,请稍候...")
-                threading.Thread(target=self._run_workflow_async, args=(token, ['python', '-u', 'workflow_controller.py', 'visuals', '--model', mtype])).start()
+                threading.Thread(target=self._run_workflow_async, args=(token, ['python3', '-u', 'workflow_controller.py', 'visuals', '--model', mtype])).start()
             else:
                 logger.warning("[ROUTE] Unknown action_type: action_type=%s", action_type)
                 print(f"[DEBUG] Unknown action_type: {action_type}", flush=True)
@@ -916,7 +977,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             if use_refresh:
                 # 缓存已空,需要调用 API 获取新一批数据
                 last_id = state.get('cimi_last_id', '') if state else ''
-                cmd = ['python', '-u', 'workflow_controller.py', 'discovery', '--refresh', '--source', source]
+                cmd = ['python3', '-u', 'workflow_controller.py', 'discovery', '--refresh', '--source', source]
                 if industry:
                     cmd.extend(['--keyword', industry])
                 if last_id:
@@ -1194,7 +1255,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 try:
                     # Import Controller dynamicially to access its powerful extraction
                     sys.path.insert(0, WORKDIR)
-                    from workflow_controller import SelfMediaController
+                    from scripts.workflow.workflow_controller import SelfMediaController
                     controller = SelfMediaController()
                     print(f"[DEBUG] Fetching content using Controller's engine: {url}", flush=True)
                     raw_content = controller._extract_article_content(url)
@@ -1309,7 +1370,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
             # 关键优化:直接导入并调用,避免 subprocess 启动开销(约 1-2 秒)
             sys.path.insert(0, WORKDIR)
-            from workflow_controller import SelfMediaController
+            from scripts.workflow.workflow_controller import SelfMediaController
             controller = SelfMediaController()
 
             print(f"[DEBUG] Executing repurpose using direct call (ID: {topic_id[:30]}...)", flush=True)
@@ -1495,7 +1556,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
         # 关键优化:直接导入并调用,避免 subprocess 启动开销(约 1-2 秒)
         # 注:workflow_controller 的 --script-only 标志实际未实现,此处调用与完整 repurpose 等价
         sys.path.insert(0, WORKDIR)
-        from workflow_controller import SelfMediaController
+        from scripts.workflow.workflow_controller import SelfMediaController
         controller = SelfMediaController()
 
         print(f"[DEBUG] Executing repurpose (script mode) using direct call", flush=True)
@@ -1556,7 +1617,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
         # 关键优化:直接导入并调用,避免 subprocess 启动开销(约 1-2 秒)
         # 注:workflow_controller 的 --article-only 标志实际未实现,此处调用与完整 repurpose 等价
         sys.path.insert(0, WORKDIR)
-        from workflow_controller import SelfMediaController
+        from scripts.workflow.workflow_controller import SelfMediaController
         controller = SelfMediaController()
 
         print(f"[DEBUG] Executing repurpose (article mode) using direct call", flush=True)
@@ -1689,7 +1750,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.send_text(token, "🖼️ 正在生成封面图,请稍候...")
 
             os.chdir(WORKDIR)
-            cmd = ['python', 'workflow_controller.py', 'visuals', '--model', model]
+            cmd = ['python3', 'workflow_controller.py', 'visuals', '--model', model]
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -1755,6 +1816,12 @@ class FeishuHandler(BaseHTTPRequestHandler):
             draft_file = state.get('draft_file', '')
             cover_path = state.get('cover_image', '')
 
+            # Ensure paths are strings, not dicts (defensive check)
+            if not isinstance(draft_file, str):
+                draft_file = ''
+            if not isinstance(cover_path, str):
+                cover_path = ''
+
             content = ""
             if draft_file and os.path.exists(draft_file):
                 with open(draft_file, 'r', encoding='utf-8') as f:
@@ -1782,8 +1849,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
             article_images = state.get('article_images', [])
             if article_images:
                 self.send_text(token, f"📤 正在上传 {len(article_images)} 张插图到预览...")
-                for p in article_images:
-                    if os.path.exists(p):
+                for img_info in article_images:
+                    p = img_info.get('path') if isinstance(img_info, dict) else img_info
+                    if p and os.path.exists(p):
                         key = self.upload_to_feishu(p)
                         if key: article_image_keys.append(key)
 
@@ -1898,7 +1966,10 @@ class FeishuHandler(BaseHTTPRequestHandler):
         try:
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
-            draft_file = state.get('draft_file')
+            draft_file = state.get('draft_file', '')
+            # Ensure draft_file is a string, not a dict
+            if not isinstance(draft_file, str):
+                draft_file = ''
             if not draft_file:
                 self.send_text(token, "⚠️ 未找到可发布的草稿,请先完成改写流程")
                 return
@@ -1910,7 +1981,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
             os.chdir(WORKDIR)
             sys.path.insert(0, WORKDIR)
-            from workflow_controller import SelfMediaController
+            from scripts.workflow.workflow_controller import SelfMediaController
             controller = SelfMediaController()
 
             ok = controller.run_post(method="api")
