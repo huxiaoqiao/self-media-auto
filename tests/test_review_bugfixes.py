@@ -51,3 +51,34 @@ class WorkflowStartupTests(unittest.TestCase):
         self.assertIsNone(workflow.build_rewrite_card)
         self.assertIsNone(workflow.send_card)
         self.assertIsNone(workflow.get_token)
+
+    def test_from_video_uses_video_extractor_before_article_fallback(self):
+        workflow = import_fresh("workflow_controller", [WORKFLOW_DIR])
+        controller = workflow.SelfMediaController()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller.workspace = tmpdir
+            controller.session_file = str(Path(tmpdir) / ".workflow_state.json")
+
+            with mock.patch.object(controller, "_extract_video_content", return_value="视频转写正文") as video_mock, \
+                 mock.patch.object(controller, "_extract_article_content", return_value="网页正文") as article_mock, \
+                 mock.patch.object(controller, "_generate_insight", return_value="解读"):
+                controller.run_from_video("https://v.douyin.com/test")
+
+        video_mock.assert_called_once_with("https://v.douyin.com/test")
+        article_mock.assert_not_called()
+
+    def test_from_video_falls_back_to_article_extractor_when_asr_empty(self):
+        workflow = import_fresh("workflow_controller", [WORKFLOW_DIR])
+        controller = workflow.SelfMediaController()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller.workspace = tmpdir
+            controller.session_file = str(Path(tmpdir) / ".workflow_state.json")
+
+            with mock.patch.object(controller, "_extract_video_content", return_value=None), \
+                 mock.patch.object(controller, "_extract_article_content", return_value="网页正文") as article_mock, \
+                 mock.patch.object(controller, "_generate_insight", return_value="解读"):
+                controller.run_from_video("https://example.com/video")
+
+        article_mock.assert_called_once()

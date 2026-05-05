@@ -343,8 +343,11 @@ class SelfMediaController:
         logger.info("[SETUP] Configuration saved successfully")
         state = self.load_state()
 
-        # 1. 提取视频内容（ASR 转录）
-        raw_content = self._extract_article_content(url)
+        # 1. 提取视频内容（ASR 转录），失败后降级到通用内容提取
+        raw_content = self._extract_video_content(url)
+        if not raw_content:
+            logger.warning("[FROM_VIDEO] 视频提取失败，降级到通用内容提取")
+            raw_content = self._extract_article_content(url, {"source": "视频链接", "title": url})
 
         # 2. 从 URL 推断视频标题
         video_title = f"视频素材: {url[:60]}"
