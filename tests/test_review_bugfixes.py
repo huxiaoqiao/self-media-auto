@@ -138,3 +138,14 @@ class FeishuImageNormalizationTests(unittest.TestCase):
             entries = [{"path": str(image), "pos": "第1段"}, {"path": str(Path(tmpdir) / "missing.png")}]
 
             self.assertEqual(server.existing_image_paths(entries), [str(image)])
+
+
+class XiaohuFormatterPathTests(unittest.TestCase):
+    def test_formatter_points_to_existing_formatting_assets(self):
+        module = import_fresh("xiaohu_formatter", [INTEGRATIONS_DIR])
+        formatter = module.XiaohuFormatter({}, mock.Mock())
+
+        self.assertEqual(formatter.xiaohu_dir.resolve(), REPO_ROOT / "scripts" / "formatting")
+        self.assertTrue(formatter.format_script.exists())
+        self.assertEqual(formatter.format_script.name, "format.py")
+        self.assertGreater(len(formatter.list_themes()), 0)

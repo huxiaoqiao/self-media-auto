@@ -38,8 +38,9 @@ class XiaohuFormatter:
         self.default_theme = config.get('default_theme', 'newspaper')
         self.gallery_timeout = config.get('gallery_timeout', 300)  # 5 分钟
 
-        self.xiaohu_dir = Path(__file__).parent.parent / 'scripts' / 'formatting'
-        self.format_script = self.xiaohu_dir / 'scripts' / 'format.py'
+        project_root = Path(__file__).resolve().parents[3]
+        self.xiaohu_dir = project_root / 'scripts' / 'formatting'
+        self.format_script = self.xiaohu_dir / 'format.py'
         self.config_json = self.xiaohu_dir / 'config.json'
 
         # 验证脚本存在
