@@ -110,3 +110,31 @@ class FeishuServerPathTests(unittest.TestCase):
         self.assertEqual(Path(cmd[2]).resolve(), REPO_ROOT / "scripts" / "workflow" / "workflow_controller.py")
         self.assertEqual(cmd[:2], [sys.executable, "-u"])
         self.assertEqual(cmd[3], "status")
+
+
+class FeishuImageNormalizationTests(unittest.TestCase):
+    def test_extract_image_path_accepts_dict_and_string(self):
+        server = import_fresh_file(
+            "feishu_card_server_for_image_tests",
+            FEISHU_DIR / "feishu-card-server.py",
+            [FEISHU_DIR, REPO_ROOT, REPO_ROOT / "scripts" / "modules"],
+        )
+
+        self.assertEqual(server.extract_image_path({"path": "C:/tmp/a.png", "pos": "第1段"}), "C:/tmp/a.png")
+        self.assertEqual(server.extract_image_path("C:/tmp/b.png"), "C:/tmp/b.png")
+        self.assertEqual(server.extract_image_path({"pos": "missing"}), "")
+        self.assertEqual(server.extract_image_path(None), "")
+
+    def test_existing_image_paths_filters_dict_entries(self):
+        server = import_fresh_file(
+            "feishu_card_server_for_existing_image_tests",
+            FEISHU_DIR / "feishu-card-server.py",
+            [FEISHU_DIR, REPO_ROOT, REPO_ROOT / "scripts" / "modules"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image = Path(tmpdir) / "image.png"
+            image.write_bytes(b"png")
+            entries = [{"path": str(image), "pos": "第1段"}, {"path": str(Path(tmpdir) / "missing.png")}]
+
+            self.assertEqual(server.existing_image_paths(entries), [str(image)])

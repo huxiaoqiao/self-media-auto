@@ -69,6 +69,23 @@ WORKFLOW_CONTROLLER = os.path.join(WORKFLOW_DIR, "workflow_controller.py")
 def build_workflow_cmd(*args):
     return [sys.executable, "-u", WORKFLOW_CONTROLLER, *[str(arg) for arg in args]]
 
+
+def extract_image_path(entry):
+    if isinstance(entry, dict):
+        return str(entry.get("path") or "")
+    if isinstance(entry, str):
+        return entry
+    return ""
+
+
+def existing_image_paths(entries):
+    paths = []
+    for entry in entries or []:
+        path = extract_image_path(entry)
+        if path and os.path.exists(path):
+            paths.append(path)
+    return paths
+
 # ==================== 全局底层引擎组件 ====================
 PROCESSED_ACTIONS = {}  # 全局请求防抖去重锁
 TOKEN_CACHE = {"token": "", "expire": 0} # 飞书 Token 缓存
@@ -841,7 +858,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             illus = state.get("article_images", [])
 
             c_key = self.upload_to_feishu(cover) if cover and os.path.exists(cover) else ""
-            i_keys = [self.upload_to_feishu(p) for p in illus if os.path.exists(p)]
+            i_keys = [self.upload_to_feishu(path) for path in existing_image_paths(illus)]
 
             content = ""
             if draft and os.path.exists(draft):
@@ -1789,10 +1806,9 @@ class FeishuHandler(BaseHTTPRequestHandler):
             article_images = state.get('article_images', [])
             if article_images:
                 self.send_text(token, f"📤 正在上传 {len(article_images)} 张插图到预览...")
-                for p in article_images:
-                    if os.path.exists(p):
-                        key = self.upload_to_feishu(p)
-                        if key: article_image_keys.append(key)
+                for path in existing_image_paths(article_images):
+                    key = self.upload_to_feishu(path)
+                    if key: article_image_keys.append(key)
 
             # 3. Build and send final card
             deai_notes = state.get('deai_notes', None)
