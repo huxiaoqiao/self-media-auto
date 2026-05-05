@@ -59,8 +59,15 @@ STATE_FILE_LOCK = threading.RLock()
 APP_ID = os.getenv("FEISHU_APP_ID", "cli_a930dedc42789cd1")
 APP_SECRET = os.getenv("FEISHU_APP_SECRET", "WOjERqoJ8OhIwIthMS3NAcJAxFDvXK2X")
 DEFAULT_RECEIVE_ID = os.getenv("FEISHU_RECEIVE_ID", "ou_2da8e0f846c19c8fabebd6c6d82a8d6d")
-WORKDIR = os.getenv("FEISHU_WORKDIR", r"C:\Users\Administrator\.openclaw\skills\self-media-auto")
-STATE_FILE = WORKDIR + r"/.workflow_state.json"
+DEFAULT_WORKDIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+WORKDIR = os.path.abspath(os.getenv("FEISHU_WORKDIR", DEFAULT_WORKDIR))
+STATE_FILE = os.path.join(WORKDIR, ".workflow_state.json")
+WORKFLOW_DIR = os.path.join(WORKDIR, "scripts", "workflow")
+WORKFLOW_CONTROLLER = os.path.join(WORKFLOW_DIR, "workflow_controller.py")
+
+
+def build_workflow_cmd(*args):
+    return [sys.executable, "-u", WORKFLOW_CONTROLLER, *[str(arg) for arg in args]]
 
 # ==================== 全局底层引擎组件 ====================
 PROCESSED_ACTIONS = {}  # 全局请求防抖去重锁
@@ -717,7 +724,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 mtype = action_type.replace('retry_visual_', '')
                 logger.info("[ROUTE] Action: retry_visual - model=%s", mtype)
                 self.send_text(token, f"🔄 正在尝试使用 [{mtype}] 引擎重新绘图,请稍候...")
-                threading.Thread(target=self._run_workflow_async, args=(token, ['python', '-u', 'workflow_controller.py', 'visuals', '--model', mtype])).start()
+                threading.Thread(target=self._run_workflow_async, args=(token, build_workflow_cmd('visuals', '--model', mtype))).start()
             else:
                 logger.warning("[ROUTE] Unknown action_type: action_type=%s", action_type)
                 print(f"[DEBUG] Unknown action_type: {action_type}", flush=True)
@@ -916,7 +923,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             if use_refresh:
                 # 缓存已空,需要调用 API 获取新一批数据
                 last_id = state.get('cimi_last_id', '') if state else ''
-                cmd = ['python', '-u', 'workflow_controller.py', 'discovery', '--refresh', '--source', source]
+                cmd = build_workflow_cmd('discovery', '--refresh', '--source', source)
                 if industry:
                     cmd.extend(['--keyword', industry])
                 if last_id:
@@ -1193,7 +1200,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             if url:
                 try:
                     # Import Controller dynamicially to access its powerful extraction
-                    sys.path.insert(0, WORKDIR)
+                    sys.path.insert(0, WORKFLOW_DIR)
                     from workflow_controller import SelfMediaController
                     controller = SelfMediaController()
                     print(f"[DEBUG] Fetching content using Controller's engine: {url}", flush=True)
@@ -1308,7 +1315,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 except: pass
 
             # 关键优化:直接导入并调用,避免 subprocess 启动开销(约 1-2 秒)
-            sys.path.insert(0, WORKDIR)
+            sys.path.insert(0, WORKFLOW_DIR)
             from workflow_controller import SelfMediaController
             controller = SelfMediaController()
 
@@ -1494,7 +1501,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
         # 关键优化:直接导入并调用,避免 subprocess 启动开销(约 1-2 秒)
         # 注:workflow_controller 的 --script-only 标志实际未实现,此处调用与完整 repurpose 等价
-        sys.path.insert(0, WORKDIR)
+        sys.path.insert(0, WORKFLOW_DIR)
         from workflow_controller import SelfMediaController
         controller = SelfMediaController()
 
@@ -1555,7 +1562,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
         # 关键优化:直接导入并调用,避免 subprocess 启动开销(约 1-2 秒)
         # 注:workflow_controller 的 --article-only 标志实际未实现,此处调用与完整 repurpose 等价
-        sys.path.insert(0, WORKDIR)
+        sys.path.insert(0, WORKFLOW_DIR)
         from workflow_controller import SelfMediaController
         controller = SelfMediaController()
 
@@ -1689,7 +1696,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.send_text(token, "🖼️ 正在生成封面图,请稍候...")
 
             os.chdir(WORKDIR)
-            cmd = ['python', 'workflow_controller.py', 'visuals', '--model', model]
+            cmd = build_workflow_cmd('visuals', '--model', model)
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -1909,7 +1916,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
             self.send_text(token, "🚀 正在启动 API 模式批量发布,请稍候...")
 
             os.chdir(WORKDIR)
-            sys.path.insert(0, WORKDIR)
+            sys.path.insert(0, WORKFLOW_DIR)
             from workflow_controller import SelfMediaController
             controller = SelfMediaController()
 

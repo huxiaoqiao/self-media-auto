@@ -82,3 +82,31 @@ class WorkflowStartupTests(unittest.TestCase):
                 controller.run_from_video("https://example.com/video")
 
         article_mock.assert_called_once()
+
+
+class FeishuServerPathTests(unittest.TestCase):
+    def test_default_workdir_is_repo_root(self):
+        with mock.patch.dict(os.environ, {
+            "FEISHU_WORKDIR": "",
+        }, clear=False):
+            os.environ.pop("FEISHU_WORKDIR", None)
+            server = import_fresh_file(
+                "feishu_card_server_for_path_tests",
+                FEISHU_DIR / "feishu-card-server.py",
+                [FEISHU_DIR, REPO_ROOT, REPO_ROOT / "scripts" / "modules"],
+            )
+
+        self.assertEqual(Path(server.WORKDIR).resolve(), REPO_ROOT)
+
+    def test_workflow_cmd_points_to_real_controller(self):
+        server = import_fresh_file(
+            "feishu_card_server_for_cmd_tests",
+            FEISHU_DIR / "feishu-card-server.py",
+            [FEISHU_DIR, REPO_ROOT, REPO_ROOT / "scripts" / "modules"],
+        )
+
+        cmd = server.build_workflow_cmd("status")
+
+        self.assertEqual(Path(cmd[2]).resolve(), REPO_ROOT / "scripts" / "workflow" / "workflow_controller.py")
+        self.assertEqual(cmd[:2], [sys.executable, "-u"])
+        self.assertEqual(cmd[3], "status")
