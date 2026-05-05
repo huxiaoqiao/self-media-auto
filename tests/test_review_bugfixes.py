@@ -16,8 +16,12 @@ INTEGRATIONS_DIR = REPO_ROOT / "scripts" / "modules" / "integrations"
 
 def import_fresh(module_name, extra_paths=()):
     for name in list(sys.modules):
-        if name == module_name:
+        if name == module_name or name.startswith(f"{module_name}."):
             sys.modules.pop(name, None)
+    if module_name == "workflow_controller":
+        for name in list(sys.modules):
+            if name == "scripts.feishu.send_feishu_card" or name.startswith("scripts.feishu.send_feishu_card."):
+                sys.modules.pop(name, None)
     for path in reversed([str(p) for p in extra_paths]):
         if path not in sys.path:
             sys.path.insert(0, path)
@@ -62,7 +66,10 @@ class WorkflowStartupTests(unittest.TestCase):
 
             with mock.patch.object(controller, "_extract_video_content", return_value="视频转写正文") as video_mock, \
                  mock.patch.object(controller, "_extract_article_content", return_value="网页正文") as article_mock, \
-                 mock.patch.object(controller, "_generate_insight", return_value="解读"):
+                 mock.patch.object(controller, "_generate_insight", return_value="解读"), \
+                 mock.patch.object(workflow, "build_rewrite_card", None), \
+                 mock.patch.object(workflow, "send_card", None), \
+                 mock.patch.object(workflow, "get_token", None):
                 controller.run_from_video("https://v.douyin.com/test")
 
         video_mock.assert_called_once_with("https://v.douyin.com/test")
@@ -78,7 +85,10 @@ class WorkflowStartupTests(unittest.TestCase):
 
             with mock.patch.object(controller, "_extract_video_content", return_value=None), \
                  mock.patch.object(controller, "_extract_article_content", return_value="网页正文") as article_mock, \
-                 mock.patch.object(controller, "_generate_insight", return_value="解读"):
+                 mock.patch.object(controller, "_generate_insight", return_value="解读"), \
+                 mock.patch.object(workflow, "build_rewrite_card", None), \
+                 mock.patch.object(workflow, "send_card", None), \
+                 mock.patch.object(workflow, "get_token", None):
                 controller.run_from_video("https://example.com/video")
 
         article_mock.assert_called_once()
