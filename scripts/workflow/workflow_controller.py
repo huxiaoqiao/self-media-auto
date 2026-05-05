@@ -48,10 +48,13 @@ except ImportError:
     WEWRITE_XIAOHU_AVAILABLE = False
 
 # ==================== 飞书卡片导入 ====================
+FEISHU_IMPORT_ERROR = None
 try:
     from scripts.feishu.send_feishu_card import build_url_preview_card, build_rewrite_card, send_card, get_token
-except ImportError:
+except Exception as e:
+    FEISHU_IMPORT_ERROR = e
     build_url_preview_card = None
+    build_rewrite_card = None
     send_card = None
     get_token = None
 
@@ -60,6 +63,8 @@ init_logging()
 
 # 获取 logger
 logger = get_workflow_logger()
+if FEISHU_IMPORT_ERROR:
+    logger.warning("飞书卡片模块不可用，跳过卡片发送功能：%s", FEISHU_IMPORT_ERROR)
 
 # 针对 Windows 环境下输出 Emoji 可能导致的 GBK 编码报错进行补丁
 if sys.stdout.encoding != 'utf-8':

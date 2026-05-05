@@ -36,3 +36,18 @@ def import_fresh_file(module_name, file_path, extra_paths=()):
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+class WorkflowStartupTests(unittest.TestCase):
+    def test_import_without_feishu_credentials_keeps_cli_usable(self):
+        with mock.patch.dict(os.environ, {
+            "FEISHU_APP_ID": "",
+            "FEISHU_APP_SECRET": "",
+            "FEISHU_RECEIVE_ID": "",
+        }, clear=False):
+            workflow = import_fresh("workflow_controller", [WORKFLOW_DIR])
+
+        self.assertIsNone(workflow.build_url_preview_card)
+        self.assertIsNone(workflow.build_rewrite_card)
+        self.assertIsNone(workflow.send_card)
+        self.assertIsNone(workflow.get_token)
