@@ -149,3 +149,16 @@ class XiaohuFormatterPathTests(unittest.TestCase):
         self.assertTrue(formatter.format_script.exists())
         self.assertEqual(formatter.format_script.name, "format.py")
         self.assertGreater(len(formatter.list_themes()), 0)
+
+
+class DiscoverySourceTests(unittest.TestCase):
+    def test_source_to_provider_mapping(self):
+        workflow = import_fresh("workflow_controller", [WORKFLOW_DIR])
+
+        self.assertEqual(workflow.resolve_hot_article_provider("cimipa"), "cimi")
+        self.assertEqual(workflow.resolve_hot_article_provider("cimi"), "cimi")
+        self.assertEqual(workflow.resolve_hot_article_provider("paid"), "cimi")
+        self.assertEqual(workflow.resolve_hot_article_provider("power-fee"), "cimi")
+        self.assertEqual(workflow.resolve_hot_article_provider("free"), "jizhile")
+        self.assertEqual(workflow.resolve_hot_article_provider("jizhile"), "jizhile")
+        self.assertIsNone(workflow.resolve_hot_article_provider(None))

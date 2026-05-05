@@ -77,6 +77,18 @@ if sys.stdout.encoding != 'utf-8':
 # 统一加载环境变量
 load_dotenv()
 
+
+def resolve_hot_article_provider(source):
+    if not source:
+        return None
+    normalized = str(source).strip().lower()
+    if normalized in {"cimipa", "cimi", "power-fee", "paid"}:
+        return "cimi"
+    if normalized in {"free", "jizhile"}:
+        return "jizhile"
+    return normalized
+
+
 class SelfMediaController:
     def __init__(self):
         self.workspace = os.getcwd()
@@ -590,7 +602,7 @@ class SelfMediaController:
             logger.error("[JIZHILE] Parse response failed: %s", e, exc_info=True)
             sys.exit(1)
 
-    def run_discovery(self, keyword=None, refresh=True, last_id=None):
+    def run_discovery(self, keyword=None, refresh=True, last_id=None, source=None):
         """
         [卡点 1 之前] 嗅探系统 (次幂数据版)
         抓取微信爆款文章的热点。
@@ -600,7 +612,7 @@ class SelfMediaController:
         - 同一轮内（换一批）：refresh=False，带 last_id 继续翻页
         """
         import requests
-        logger.info("启动 run_discovery | keyword=%s, refresh=%s, last_id=%s", keyword, refresh, last_id)
+        logger.info("启动 run_discovery | keyword=%s, refresh=%s, last_id=%s, source=%s", keyword, refresh, last_id, source)
         state = self.load_state()
         saved_industry = state.get('industry')
 
@@ -652,7 +664,7 @@ class SelfMediaController:
                 logger.info("refresh=True 但命令行传了 --last_id=%s，尊重用户输入", last_id)
 
         # 选择 API Provider
-        provider = os.getenv("HOT_ARTICLE_PROVIDER", "jizhile")
+        provider = resolve_hot_article_provider(source) or os.getenv("HOT_ARTICLE_PROVIDER", "jizhile")
 
         if provider == "jizhile":
             print("[嗅探系统] 启动 [嗅探子系统 - 极致了 API]...")
@@ -1921,6 +1933,7 @@ def main():
     parser.add_argument('--script', type=str); parser.add_argument('--article', type=str)
     parser.add_argument('--refresh', action='store_true', default=True, help="强制刷新（默认行为）")
     parser.add_argument('--last_id', type=str, help="游标分页用的 last_id")
+    parser.add_argument('--source', type=str, choices=['cimipa', 'cimi', 'free', 'jizhile', 'paid', 'power-fee'], help="热点来源")
     parser.add_argument('--script-only', action='store_true', help="仅重写短视频脚本")
     parser.add_argument('--article-only', action='store_true', help="仅重写深度长文")
 
@@ -1929,7 +1942,7 @@ def main():
     
     if args.action == 'setup': controller.run_setup()
     elif args.action == 'pre_discovery': controller.run_pre_discovery(keyword=args.keyword)
-    elif args.action == 'discovery': controller.run_discovery(keyword=args.keyword, refresh=args.refresh, last_id=args.last_id)
+    elif args.action == 'discovery': controller.run_discovery(keyword=args.keyword, refresh=args.refresh, last_id=args.last_id, source=args.source)
     elif args.action == 'next': controller.run_next_discovery()
     elif args.action == 'from-article': controller.run_from_article(args.url)
     elif args.action == 'from-video': controller.run_from_video(args.url)
