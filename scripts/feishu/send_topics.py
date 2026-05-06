@@ -1,4 +1,4 @@
-import json, sys
+import json, os, sys
 sys.path.insert(0, '.')
 from send_feishu_card import get_token, send_card, build_topic_list_card
 
@@ -55,5 +55,5 @@ with open('temp_topics.json', 'w', encoding='utf-8') as f:
 
 token = get_token()
 card = build_topic_list_card(topics, 'AI')
-send_card(token, 'ou_2da8e0f846c19c8fabebd6c6d82a8d6d', card)
+send_card(token, os.getenv('FEISHU_RECEIVE_ID', ''), card)
 print('Card sent successfully')

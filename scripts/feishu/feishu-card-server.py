@@ -29,6 +29,12 @@ import certifi
 import httpx
 from dotenv import load_dotenv
 
+# Fix: Add scripts/modules to path so 'from utils.logger_config' works
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_MODULES_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "modules"))
+if _MODULES_DIR not in sys.path:
+    sys.path.insert(0, _MODULES_DIR)
+
 # 修复 Windows 环境下 requests SSL CA 证书问题
 os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 os.environ['SSL_CERT_FILE'] = certifi.where()
@@ -55,10 +61,10 @@ TOPIC_MAP_LOCK = threading.RLock()
 # Thread lock for protecting STATE_FILE concurrent access
 STATE_FILE_LOCK = threading.RLock()
 
-# Feishu App Config (from environment variables with fallback)
-APP_ID = os.getenv("FEISHU_APP_ID", "cli_a930dedc42789cd1")
-APP_SECRET = os.getenv("FEISHU_APP_SECRET", "WOjERqoJ8OhIwIthMS3NAcJAxFDvXK2X")
-DEFAULT_RECEIVE_ID = os.getenv("FEISHU_RECEIVE_ID", "ou_2da8e0f846c19c8fabebd6c6d82a8d6d")
+# Feishu App Config
+APP_ID = os.getenv("FEISHU_APP_ID", "")
+APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
+DEFAULT_RECEIVE_ID = os.getenv("FEISHU_RECEIVE_ID", "")
 DEFAULT_WORKDIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 WORKDIR = os.path.abspath(os.getenv("FEISHU_WORKDIR", DEFAULT_WORKDIR))
 STATE_FILE = os.path.join(WORKDIR, ".workflow_state.json")
@@ -302,13 +308,28 @@ class FeishuHandler(BaseHTTPRequestHandler):
             logger.info("[EVENT] Card action detected: action_value=%s", str(action_value)[:50])
 
             # 动态身份提取:识别是谁点击了按钮
+            # 支持多种格式的 open_id 提取
             operator_obj = data.get('operator', {})
-            open_id = operator_obj.get('open_id') or event_body.get('user', {}).get('open_id')
-            if open_id:
+            context_obj = data.get('context', {})
+            open_id = (
+                operator_obj.get('open_id') or
+                operator_obj.get('user_id') or
+                event_body.get('user', {}).get('open_id') or
+                event_body.get('sender', {}).get('open_id') or
+                context_obj.get('open_id') or
+                context_obj.get('user_id') or
+                data.get('open_id') or
+                data.get('user_id') or
+                ''
+            )
+            if open_id and open_id != 'test':
                 global DEFAULT_RECEIVE_ID
                 if DEFAULT_RECEIVE_ID != open_id:
                     logger.info(f"[AUTH] Switching message target to user: {open_id}")
                     DEFAULT_RECEIVE_ID = open_id
+                    logger.info(f"[AUTH] DEFAULT_RECEIVE_ID updated to: {open_id}")
+            else:
+                logger.warning(f"[AUTH] Could not extract valid open_id - keeping DEFAULT_RECEIVE_ID={DEFAULT_RECEIVE_ID}")
             # 🚀 解决 200672: 飞书卡片返回格式极其严格
             # 必须提供合规的 toast 字典,并且增加 Content-Length 防止底层网关截断
             resp_data = {
@@ -613,18 +634,32 @@ class FeishuHandler(BaseHTTPRequestHandler):
         logger.info("[ROUTE] Card action received: action_value=%s", str(action_value)[:50])
         try:
             # 防抖去重:10秒内相同的操作直接忽略
+            # Fix: dict action_value must be converted to hashable string key
+            action_key = json.dumps(action_value, sort_keys=True) if isinstance(action_value, dict) else str(action_value)
             now = time.time()
-            if action_value in PROCESSED_ACTIONS and now - PROCESSED_ACTIONS.get(action_value, 0) < 10:
-                logger.info(f"[ASYNC_SKIP] Ignoring duplicate action: {action_value}")
+            if action_key in PROCESSED_ACTIONS and now - PROCESSED_ACTIONS.get(action_key, 0) < 10:
+                logger.info(f"[ASYNC_SKIP] Ignoring duplicate action: {action_key}")
                 return
-            PROCESSED_ACTIONS[action_value] = now
+            PROCESSED_ACTIONS[action_key] = now
 
             logger.debug("[ROUTE] Raw action_value: %s", repr(action_value))
             print(f"[DEBUG] handle_card_action: {repr(action_value)}", flush=True)
             token = self.get_token()
 
+            # Fix for dict action_value (sent by forwardSelfMediaCardAction as {"action": actionValue})
+            # This is the NEW format that fixes the OpenClaw "malformed" error.
+            if isinstance(action_value, dict):
+                raw_action = str(action_value.get('action', ''))
+                raw_id = str(action_value.get('id', '')) if action_value.get('id') not in (None, '') else ''
+                if '_' in raw_action:
+                    action_value = raw_action
+                else:
+                    action_value = f"{raw_action}_{raw_id}" if raw_id else raw_action
+                logger.info("[ROUTE] Parsed dict action: action_value=%s", action_value[:50])
+                print(f"[DEBUG] Parsed dict action_value: {action_value}", flush=True)
+
             # Strip common garbled quote chars and whitespaces
-            if isinstance(action_value, str):
+            elif isinstance(action_value, str):
                 for q in '"\'铐牢笼非':
                     action_value = action_value.strip(q)
                 action_value = action_value.strip()
@@ -1243,14 +1278,18 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     f"直接输出分析结论,不要车轱辘话。"
                 )
                 try:
+                    from dotenv import load_dotenv
+                    load_dotenv(os.path.join(WORKDIR, '.env'))
+                    base_url = os.environ.get('OPENAI_BASE_URL', 'https://api.deepseek.com/v1').rstrip('/')
+                    model_id = os.environ.get('LLM_MODEL_ID', 'deepseek-chat')
                     req_data = json.dumps({
-                        "model": "deepseek-chat",
+                        "model": model_id,
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0.7,
                         "max_tokens": 600
                     }).encode("utf-8")
                     req = urllib.request.Request(
-                        "https://api.deepseek.com/v1/chat/completions",
+                        f"{base_url}/chat/completions",
                         data=req_data,
                         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                         method="POST"
@@ -1285,6 +1324,17 @@ class FeishuHandler(BaseHTTPRequestHandler):
 
     def build_rewrite_card(self, title, insight, topic_id):
         """Build rewrite confirm card."""
+        # Strip any lines that start with 🔥选题 or 选题: from insight (LLM sometimes echoes title)
+        if insight:
+            lines = insight.split('\n')
+            cleaned_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith('🔥') and ('选题' in stripped or '热度指数' in stripped):
+                    continue  # Skip duplicate title/echo lines
+                cleaned_lines.append(line)
+            insight = '\n'.join(cleaned_lines).strip()
+
         return {
             "config": {"wide_screen_mode": True},
             "header": {"template": "purple", "title": {"tag": "plain_text", "content": "📝 选题解读完成"}},

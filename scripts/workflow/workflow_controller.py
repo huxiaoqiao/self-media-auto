@@ -75,7 +75,7 @@ if sys.stdout.encoding != 'utf-8':
         pass
 
 # 统一加载环境变量
-load_dotenv()
+load_dotenv(os.path.join(_PROJECT_ROOT, '.env'))
 
 
 def resolve_hot_article_provider(source):
@@ -330,7 +330,7 @@ class SelfMediaController:
             try:
                 token = get_token()
                 card = build_rewrite_card(article_title, insight_text, topic_id_str)
-                send_card(token, os.getenv("FEISHU_RECEIVE_ID", "ou_2da8e0f846c19c8fabebd6c6d82a8d6d"), card)
+                send_card(token, os.getenv("FEISHU_RECEIVE_ID", ""), card)
                 print("✅ 选题解读卡片已发送，请确认是否改写")
             except Exception as e:
                 logger.warning(f"[FROM_ARTICLE] 卡片发送失败: {e}")
@@ -404,7 +404,7 @@ class SelfMediaController:
             try:
                 token = get_token()
                 card = build_rewrite_card(video_title, insight_text, topic_id_str)
-                send_card(token, os.getenv("FEISHU_RECEIVE_ID", "ou_2da8e0f846c19c8fabebd6c6d82a8d6d"), card)
+                send_card(token, os.getenv("FEISHU_RECEIVE_ID", ""), card)
                 print("✅ 选题解读卡片已发送，请确认是否改写")
             except Exception as e:
                 logger.warning(f"[FROM_VIDEO] 卡片发送失败: {e}")
@@ -1689,7 +1689,8 @@ class SelfMediaController:
             THEMES = {"hardcore": "modern", "insight": "grace", "news": "default", "emotional": "grace", "risk": "modern", "tool": "simple", "growth": "simple"}
             wechat_theme = THEMES.get(state.get('content_category', ''), _os.environ.get("WECHAT_THEME", "default"))
             
-            script = _os.path.join(baoyu_dir, "scripts", "wechat-article.ts" if method == "browser" else "wechat-api.ts")
+            script_name = "wechat-article.ts" if method == "browser" else "wechat-api.ts"
+            script = _os.path.join(baoyu_dir, script_name)
             args = [bun_path, script] if bun_path else [npx_cmd, "-y", "bun", script]
 
             if is_html:
