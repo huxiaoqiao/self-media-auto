@@ -1684,7 +1684,7 @@ class SelfMediaController:
             import shutil
             bun_path = shutil.which("bun") or shutil.which("bun.exe")
             npx_cmd = "npx.cmd" if _os.name == "nt" else "npx"
-            baoyu_dir = _os.path.join(self.workspace, "scripts", "posting")
+            baoyu_dir = _os.path.join(_PROJECT_ROOT, "scripts", "posting")
             
             THEMES = {"hardcore": "modern", "insight": "grace", "news": "default", "emotional": "grace", "risk": "modern", "tool": "simple", "growth": "simple"}
             wechat_theme = THEMES.get(state.get('content_category', ''), _os.environ.get("WECHAT_THEME", "default"))
