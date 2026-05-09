@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
@@ -6,6 +7,8 @@ import { Buffer } from 'node:buffer';
 import { fileURLToPath } from 'node:url';
 import { launchChrome, tryConnectExisting, findExistingChromeDebugPort, getPageSession, waitForNewTab, clickElement, typeText, evaluate, sleep, getAccountProfileDir, type ChromeSession, type CdpConnection } from './cdp.ts';
 import { loadWechatExtendConfig, resolveAccount } from './wechat-extend-config.ts';
+import { prepareForWechatClipboard } from '../formatting/html-sanitizer.ts';
+import { convertMarkdown } from './md-to-wechat.ts';
 
 const WECHAT_URL = 'https://mp.weixin.qq.com/';
 
@@ -31,6 +34,10 @@ interface ArticleOptions {
   profileDir?: string;
   cdpPort?: number;
   cover?: string;
+}
+
+interface HtmlClipboardInfo {
+  expectedCjkSamples: string[];
 }
 
 async function waitForLogin(session: ChromeSession, timeoutMs = 120_000): Promise<boolean> {
@@ -89,6 +96,14 @@ async function copyImageToClipboard(imagePath: string): Promise<void> {
   if (result.status !== 0) throw new Error(`Failed to copy image: ${imagePath}`);
 }
 
+async function copyHtmlToClipboardFile(htmlFilePath: string): Promise<void> {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const copyScript = path.join(__dirname, './copy-to-clipboard.ts');
+  const result = spawnSync('npx', ['-y', 'bun', copyScript, 'html', '--file', htmlFilePath], { stdio: 'inherit' });
+  if (result.status !== 0) throw new Error(`Failed to copy rich HTML: ${htmlFilePath}`);
+}
+
 async function pasteInEditor(session: ChromeSession): Promise<void> {
   const modifiers = process.platform === 'darwin' ? 4 : 2;
   await session.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'v', code: 'KeyV', modifiers, windowsVirtualKeyCode: 86 }, { sessionId: session.sessionId });
@@ -120,67 +135,99 @@ async function sendPaste(cdp?: CdpConnection, sessionId?: string): Promise<void>
   }
 }
 
-async function copyHtmlFromBrowser(cdp: CdpConnection, htmlFilePath: string, contentImages: ImageInfo[] = []): Promise<void> {
-  const absolutePath = path.isAbsolute(htmlFilePath) ? htmlFilePath : path.resolve(process.cwd(), htmlFilePath);
-  const fileUrl = `file://${absolutePath}`;
+function extractElementInnerHtml(html: string, elementId: string): string | null {
+  const openTagPattern = new RegExp(`<([a-zA-Z][\\w:-]*)\\b(?=[^>]*\\bid=["']${elementId}["'])[^>]*>`, 'i');
+  const openMatch = openTagPattern.exec(html);
+  if (!openMatch || openMatch.index === undefined) return null;
 
-  console.log(`[wechat] Opening HTML file in new tab: ${fileUrl}`);
+  const tagName = openMatch[1]!;
+  const contentStart = openMatch.index + openMatch[0].length;
+  const tagPattern = new RegExp(`</?${tagName}\\b[^>]*>`, 'gi');
+  tagPattern.lastIndex = contentStart;
 
-  const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: fileUrl });
-  const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
-
-  // Activate the target tab to ensure keyboard events work correctly
-  await cdp.send('Target.activateTarget', { targetId });
-
-  await cdp.send('Page.enable', {}, { sessionId });
-  await cdp.send('Runtime.enable', {}, { sessionId });
-  await sleep(2000);
-
-  if (contentImages.length > 0) {
-    console.log('[wechat] Replacing img tags with placeholders for browser paste...');
-    const replacements = contentImages.map(img => ({ placeholder: img.placeholder, localPath: img.localPath }));
-    await cdp.send<{ result: { value: unknown } }>('Runtime.evaluate', {
-      expression: `
-        (function() {
-          const replacements = ${JSON.stringify(replacements)};
-          for (const r of replacements) {
-            const imgs = document.querySelectorAll('img[src="' + r.placeholder + '"], img[data-local-path="' + r.localPath + '"]');
-            for (const img of imgs) {
-              const text = document.createTextNode(r.placeholder);
-              img.parentNode.replaceChild(text, img);
-            }
-          }
-          return true;
-        })()
-      `,
-      returnByValue: true,
-    }, { sessionId });
-    await sleep(500);
+  let depth = 1;
+  let match: RegExpExecArray | null;
+  while ((match = tagPattern.exec(html)) !== null) {
+    if (match[0].startsWith('</')) {
+      depth -= 1;
+      if (depth === 0) return html.slice(contentStart, match.index);
+    } else {
+      depth += 1;
+    }
   }
 
-  console.log('[wechat] Selecting #output content...');
-  await cdp.send<{ result: { value: unknown } }>('Runtime.evaluate', {
-    expression: `
-      (function() {
-        const output = document.querySelector('#output') || document.body;
-        const range = document.createRange();
-        range.selectNodeContents(output);
-        const selection = window.getSelection();
-        selection.removeAllRanges();
-        selection.addRange(range);
-        return true;
-      })()
-    `,
-    returnByValue: true,
-  }, { sessionId });
-  await sleep(300);
+  return null;
+}
 
-  console.log('[wechat] Copying content...');
-  await sendCopy(cdp, sessionId);
-  await sleep(1000);
+function replaceImagesWithPlaceholders(html: string, contentImages: ImageInfo[]): string {
+  let result = html;
+  for (const img of contentImages) {
+    result = result.replace(/<img\b[^>]*>/gi, (tag) => {
+      const hasPlaceholderSrc = new RegExp(`\\bsrc=["']${escapeRegExp(img.placeholder)}["']`, 'i').test(tag);
+      const hasLocalPath = new RegExp(`\\bdata-local-path=["']${escapeRegExp(img.localPath)}["']`, 'i').test(tag);
+      return hasPlaceholderSrc || hasLocalPath ? img.placeholder : tag;
+    });
+  }
+  return result;
+}
 
-  console.log('[wechat] Closing HTML tab...');
-  await cdp.send('Target.closeTarget', { targetId });
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractTextForVerification(html: string): string {
+  return html
+    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getCjkVerificationSamples(html: string): string[] {
+  const text = extractTextForVerification(html);
+  const matches = text.match(/[\u3400-\u9fff]{4,}/g) ?? [];
+  const samples: string[] = [];
+  for (const match of matches) {
+    const sample = match.slice(0, Math.min(8, match.length));
+    if (!samples.includes(sample)) samples.push(sample);
+    if (samples.length >= 5) break;
+  }
+  return samples;
+}
+
+async function copyHtmlFromBrowser(_cdp: CdpConnection, htmlFilePath: string, contentImages: ImageInfo[] = []): Promise<HtmlClipboardInfo> {
+  const absolutePath = path.isAbsolute(htmlFilePath) ? htmlFilePath : path.resolve(process.cwd(), htmlFilePath);
+  const sourceHtml = fs.readFileSync(absolutePath, 'utf-8');
+  let fragment = extractElementInnerHtml(sourceHtml, 'output')
+    ?? extractElementInnerHtml(sourceHtml, 'wechatHtml')
+    ?? sourceHtml;
+
+  if (contentImages.length > 0) {
+    console.log('[wechat] Replacing img tags with placeholders for rich HTML clipboard...');
+    fragment = replaceImagesWithPlaceholders(fragment, contentImages);
+  }
+
+  const expectedCjkSamples = getCjkVerificationSamples(fragment);
+  const clipboardHtml = prepareForWechatClipboard(fragment);
+  const clipboardDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wechat-rich-clipboard-'));
+  const clipboardPath = path.join(clipboardDir, 'clipboard.html');
+  fs.writeFileSync(clipboardPath, clipboardHtml, 'utf-8');
+
+  console.log(`[wechat] Prepared rich HTML clipboard: ${clipboardPath}`);
+  try {
+    await copyHtmlToClipboardFile(clipboardPath);
+  } finally {
+    fs.rmSync(clipboardDir, { recursive: true, force: true });
+  }
+
+  return { expectedCjkSamples };
 }
 
 async function pasteFromClipboardInEditor(session: ChromeSession): Promise<void> {
@@ -199,22 +246,7 @@ async function parseMarkdownWithPlaceholders(
   color?: string,
   citeStatus: boolean = true
 ): Promise<{ title: string; author: string; summary: string; htmlPath: string; contentImages: ImageInfo[] }> {
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-  const mdToWechatScript = path.join(__dirname, 'md-to-wechat.ts');
-  const args = ['-y', 'bun', mdToWechatScript, markdownPath];
-  if (theme) args.push('--theme', theme);
-  if (color) args.push('--color', color);
-  if (!citeStatus) args.push('--no-cite');
-
-  const result = spawnSync('npx', args, { stdio: ['inherit', 'pipe', 'pipe'] });
-  if (result.status !== 0) {
-    const stderr = result.stderr?.toString() || '';
-    throw new Error(`Failed to parse markdown: ${stderr}`);
-  }
-
-  const output = result.stdout.toString();
-  return JSON.parse(output);
+  return await convertMarkdown(markdownPath, { theme, color, citeStatus });
 }
 
 function parseHtmlMeta(htmlPath: string): { title: string; author: string; summary: string; contentImages: ImageInfo[] } {
@@ -752,22 +784,36 @@ export async function postArticle(options: ArticleOptions): Promise<void> {
 
     if (effectiveHtmlFile && fs.existsSync(effectiveHtmlFile)) {
       console.log(`[wechat] Copying HTML content from: ${effectiveHtmlFile}`);
-      await copyHtmlFromBrowser(cdp, effectiveHtmlFile, contentImages);
+      const clipboardInfo = await copyHtmlFromBrowser(cdp, effectiveHtmlFile, contentImages);
       await sleep(500);
       console.log('[wechat] Pasting into editor...');
       await pasteFromClipboardInEditor(session);
       await sleep(3000);
 
-      const editorHasContent = await evaluate<boolean>(session, `
+      const pasteVerification = await evaluate<{ hasText: boolean; hasFormatting: boolean; hasReplacementChars: boolean; missingSamples: string[] }>(session, `
         (function() {
+          const expectedCjkSamples = ${JSON.stringify(clipboardInfo.expectedCjkSamples)};
+          const replacementChar = ${JSON.stringify('\uFFFD')};
           const editor = document.querySelector('.ProseMirror');
-          if (!editor) return false;
+          if (!editor) return { hasText: false, hasFormatting: false, hasReplacementChars: false, missingSamples: expectedCjkSamples };
           const text = editor.innerText?.trim() || '';
-          return text.length > 0;
+          const formatted = editor.querySelector('h1,h2,h3,h4,h5,h6,strong,b,hr,blockquote,ul,ol');
+          const missingSamples = expectedCjkSamples.filter(sample => !text.includes(sample));
+          return {
+            hasText: text.length > 0,
+            hasFormatting: !!formatted,
+            hasReplacementChars: text.includes(replacementChar),
+            missingSamples,
+          };
         })()
       `);
-      if (editorHasContent) {
-        console.log('[wechat] Body content verified OK.');
+      if (pasteVerification.hasText && pasteVerification.hasFormatting && !pasteVerification.hasReplacementChars && pasteVerification.missingSamples.length === 0) {
+        console.log('[wechat] Body content, rich formatting, and Chinese text verified OK.');
+      } else if (pasteVerification.hasText) {
+        if (pasteVerification.hasReplacementChars || pasteVerification.missingSamples.length > 0) {
+          throw new Error(`Body pasted with corrupted Chinese text. Missing samples: ${pasteVerification.missingSamples.join(', ') || '(none)'}`);
+        }
+        console.warn('[wechat] Body text was pasted, but rich formatting was not detected. Check clipboard HTML handling.');
       } else {
         console.warn('[wechat] Body content verification failed: editor appears empty after paste.');
       }

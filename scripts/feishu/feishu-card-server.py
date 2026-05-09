@@ -1350,29 +1350,30 @@ class FeishuHandler(BaseHTTPRequestHandler):
         }
 
     def run_repurpose_and_send_card(self, token, action_value):
-        """Run repurpose - generate script + article, send two review cards."""
+        """Run repurpose - generate script + article, send two review cards.
+        
+        修复:改用 subprocess 拉起，避免阻塞卡服务器主线程导致进程被 SIGKILL。
+        """
         logger.info("[REPURPOSE] Starting content repurpose: action_value=%s", str(action_value)[:50])
         try:
             os.chdir(WORKDIR)
             start_time = time.time()
 
-            # 1. 强力净化:改写前彻底清理旧状态,并同步到磁盘,切断旧数据引用路径
+            # 1. 强力净化:改写前彻底清理旧状态,切断旧数据引用路径
             try:
                 if os.path.exists(STATE_FILE):
                     with open(STATE_FILE, 'r', encoding='utf-8') as f:
                         state_to_clean = json.load(f)
                     state_to_clean['draft_file'] = None
                     state_to_clean['video_script'] = None
-                    # 保存这个"干净"的状态,防止脚本读到旧值
                     with open(STATE_FILE, 'w', encoding='utf-8') as f:
                         json.dump(state_to_clean, f, ensure_ascii=False, indent=2)
                     print(f"[DEBUG] [{time.strftime('%H:%M:%S')}] Cleared old draft paths in state file.", flush=True)
             except Exception as e:
                 print(f"[WARN] Failed to clean state: {e}", flush=True)
 
-            # 2. 准备执行参数 - 关键优化:直接导入 SelfMediaController 调用,避免 subprocess 开销
+            # 2. 提取 topic_id
             topic_id = action_value.split('_', 1)[1] if '_' in action_value else action_value
-            # 还原真实 ID
             if topic_id in ['script_01', 'article_01']:
                 try:
                     with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -1381,90 +1382,95 @@ class FeishuHandler(BaseHTTPRequestHandler):
                     if real_id: topic_id = real_id
                 except: pass
 
-            # 关键优化:直接导入并调用,避免 subprocess 启动开销(约 1-2 秒)
-            sys.path.insert(0, WORKFLOW_DIR)
-            from workflow_controller import SelfMediaController
-            controller = SelfMediaController()
+            # 3. 用 subprocess 拉起 repurpose 任务，卡服务器主进程不阻塞
+            cmd = build_workflow_cmd('repurpose', '--id', topic_id)
+            print(f"[DEBUG] Spawning repurpose subprocess: {' '.join(cmd)}", flush=True)
 
-            print(f"[DEBUG] Executing repurpose using direct call (ID: {topic_id[:30]}...)", flush=True)
-            process_start = time.time()
-
-            # 直接调用 run_repurpose 方法,传入 topic_id
-            controller.run_repurpose(str(topic_id))
-
-            process_duration = time.time() - process_start
-            print(f"[DEBUG] Repurpose completed in {process_duration:.2f}s", flush=True)
-
-            # 3. 载入状态,并进行文件"新鲜度"校验
-            with open(STATE_FILE, 'r', encoding='utf-8') as f:
-                state = json.load(f)
-
-            draft_file = state.get('draft_file', '')
-            script_file = state.get('video_script', '')
-            deai_notes = state.get('deai_notes', None)
-
-            # 如果路径依然为空,或者文件修改时间在启动之前,说明没写成功
-            def is_file_fresh(path, threshold_time):
-                if not path or not os.path.exists(path): return False
-                return os.path.getmtime(path) >= threshold_time
-
-            if not is_file_fresh(draft_file, start_time) and not is_file_fresh(script_file, start_time):
-                print(f"[ERROR] Stale files detected. Start: {start_time}, Draft: {os.path.getmtime(draft_file) if draft_file and os.path.exists(draft_file) else 'N/A'}", flush=True)
-                self.send_text(token, "⚠️ 检测到生成文件失效,请尝试重试按钮。")
-                return
-
-            # 6. 读取新生成的内容
-            title = state.get('topic_context', {}).get('title', '内容')
-            article_full = ""
-            if draft_file and os.path.exists(draft_file):
-                try:
-                    with open(draft_file, 'r', encoding='utf-8') as f:
-                        raw = f.read()
-                    article_full = re.sub(r'^#+\s*', '', raw, flags=re.MULTILINE).strip()
-                except: pass
-            if not article_full:
-                article_full = "(未生成文章)"
-
-            script_full = ""
-            if script_file and os.path.exists(script_file):
-                try:
-                    with open(script_file, 'r', encoding='utf-8') as f:
-                        script_full = f.read().strip()
-                except Exception:
-                    pass
-            if not script_full:
-                script_full = "(未生成脚本)"
-
-            generate_script = os.getenv("GENERATE_VIDEO_SCRIPT", "FALSE").upper() == "TRUE"
-
-            if generate_script:
-                self.send_text(token, "✨ 改写完成,请分别审核【脚本】和【文章】...")
-
-                script_card = self.build_review_card_v2(
-                    cover_path="",
-                    title=f"🎬 短视频脚本 | {title}",
-                    content=script_full,
-                    tags="脚本",
-                    review_id="script_01",
-                    template="orange",
-                    header_title="🎬 脚本审核",
-                    deai_notes=deai_notes
-                )
-                self.send_card(token, script_card)
-            else:
-                self.send_text(token, "✨ 改写完成,请审核【文章】...")
-
-            article_card = self.build_review_card_v2(
-                cover_path="",
-                title=f"📖 深度长文 | {title}",
-                content=article_full,
-                tags="文章",
-                review_id="article_01",
-                template="blue",
-                header_title="📖 文章审核",
-                deai_notes=deai_notes
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1
             )
-            self.send_card(token, article_card)
+
+            # 4. 在后台线程等待 subprocess 完成，然后读取结果并发卡
+            def monitor_repurpose(proc, token, start_time):
+                try:
+                    # 读取所有输出（repurpose 任务完成后才继续）
+                    for line in proc.stdout:
+                        clean_line = line.strip()
+                        if clean_line:
+                            print(f"[repurpose] {clean_line}", flush=True)
+                    proc.wait()
+
+                    print(f"[REPURPOSE] Subprocess finished with code {proc.returncode}", flush=True)
+
+                    # 5. 读取生成结果
+                    with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                        state = json.load(f)
+
+                    draft_file = state.get('draft_file', '')
+                    script_file = state.get('video_script', '')
+                    deai_notes = state.get('deai_notes', None)
+
+                    def is_file_fresh(path, threshold_time):
+                        if not path or not os.path.exists(path): return False
+                        return os.path.getmtime(path) >= threshold_time
+
+                    if not is_file_fresh(draft_file, start_time) and not is_file_fresh(script_file, start_time):
+                        self.send_text(token, "⚠️ 检测到生成文件失效,请尝试重试按钮。")
+                        return
+
+                    title = state.get('topic_context', {}).get('title', '内容')
+                    article_full = ""
+                    if draft_file and os.path.exists(draft_file):
+                        try:
+                            with open(draft_file, 'r', encoding='utf-8') as f:
+                                raw = f.read()
+                            article_full = re.sub(r'^#+\s*', '', raw, flags=re.MULTILINE).strip()
+                        except: pass
+                    if not article_full:
+                        article_full = "(未生成文章)"
+
+                    script_full = ""
+                    if script_file and os.path.exists(script_file):
+                        try:
+                            with open(script_file, 'r', encoding='utf-8') as f:
+                                script_full = f.read().strip()
+                        except Exception:
+                            pass
+                    if not script_full:
+                        script_full = "(未生成脚本)"
+
+                    generate_script = os.getenv("GENERATE_VIDEO_SCRIPT", "FALSE").upper() == "TRUE"
+
+                    if generate_script:
+                        self.send_text(token, "✨ 改写完成,请分别审核【脚本】和【文章】...")
+                        script_card = self.build_review_card_v2(
+                            cover_path="", title=f"🎬 短视频脚本 | {title}",
+                            content=script_full, tags="脚本", review_id="script_01",
+                            template="orange", header_title="🎬 脚本审核", deai_notes=deai_notes
+                        )
+                        self.send_card(token, script_card)
+                    else:
+                        self.send_text(token, "✨ 改写完成,请审核【文章】...")
+
+                    article_card = self.build_review_card_v2(
+                        cover_path="", title=f"📖 深度长文 | {title}",
+                        content=article_full, tags="文章", review_id="article_01",
+                        template="blue", header_title="📖 文章审核", deai_notes=deai_notes
+                    )
+                    self.send_card(token, article_card)
+
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    self.send_text(token, f"⚠️ 改写失败: {str(e)[:100]}")
+
+            threading.Thread(target=monitor_repurpose, args=(proc, token, start_time), daemon=True).start()
 
         except Exception as e:
             self.send_text(token, f"⚠️ 改写失败: {str(e)[:100]}")
@@ -1967,7 +1973,7 @@ class FeishuHandler(BaseHTTPRequestHandler):
         }
 
     def run_post(self, token):
-        """Trigger post workflow using API mode (no browser)."""
+        """Trigger the WeChat post workflow from the Feishu publish button."""
         try:
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
@@ -1979,14 +1985,14 @@ class FeishuHandler(BaseHTTPRequestHandler):
                 self.send_text(token, f"⚠️ 草稿文件不存在: {draft_file}\n请重新执行改写流程")
                 return
 
-            self.send_text(token, "🚀 正在启动 API 模式批量发布,请稍候...")
+            self.send_text(token, "🚀 正在启动浏览器模式发布,请稍候...")
 
             os.chdir(WORKDIR)
             sys.path.insert(0, WORKFLOW_DIR)
             from workflow_controller import SelfMediaController
             controller = SelfMediaController()
 
-            ok = controller.run_post(method="api")
+            ok = controller.run_post(method="browser")
             if ok:
                 self.send_text(token, "🎉 发布完成!请前往公众号后台确认草稿")
             else:

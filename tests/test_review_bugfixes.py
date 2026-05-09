@@ -1,6 +1,9 @@
 import importlib
 import importlib.util
+import json
+import types
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = REPO_ROOT / "scripts" / "workflow"
 FEISHU_DIR = REPO_ROOT / "scripts" / "feishu"
 INTEGRATIONS_DIR = REPO_ROOT / "scripts" / "modules" / "integrations"
+POSTING_DIR = REPO_ROOT / "scripts" / "posting"
 
 
 def import_fresh(module_name, extra_paths=()):
@@ -121,6 +125,46 @@ class FeishuServerPathTests(unittest.TestCase):
         self.assertEqual(cmd[:2], [sys.executable, "-u"])
         self.assertEqual(cmd[3], "status")
 
+    def test_publish_button_uses_browser_mode(self):
+        server = import_fresh_file(
+            "feishu_card_server_for_publish_tests",
+            FEISHU_DIR / "feishu-card-server.py",
+            [FEISHU_DIR, REPO_ROOT, REPO_ROOT / "scripts" / "modules"],
+        )
+
+        seen = {}
+
+        class DummyController:
+            def run_post(self, method="api"):
+                seen["method"] = method
+                return True
+
+        class FakeHandler:
+            def __init__(self):
+                self.messages = []
+
+            def send_text(self, token, message):
+                self.messages.append(message)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            draft_file = Path(tmpdir) / "article.md"
+            draft_file.write_text("# title\n\nbody", encoding="utf-8")
+            state_file = Path(tmpdir) / "state.json"
+            state_file.write_text(f'{{"draft_file": "{str(draft_file).replace(chr(92), chr(92) + chr(92))}"}}', encoding="utf-8")
+
+            fake_workflow = types.SimpleNamespace(SelfMediaController=DummyController)
+            handler = FakeHandler()
+
+            with mock.patch.object(server, "STATE_FILE", str(state_file)), \
+                 mock.patch.object(server, "WORKDIR", tmpdir), \
+                 mock.patch.object(server, "WORKFLOW_DIR", str(WORKFLOW_DIR)), \
+                 mock.patch.dict(sys.modules, {"workflow_controller": fake_workflow}), \
+                 mock.patch.object(server.os, "chdir"):
+                server.FeishuHandler.run_post(handler, "token")
+
+        self.assertEqual(seen["method"], "browser")
+        self.assertTrue(any("浏览器模式" in message for message in handler.messages))
+
 
 class FeishuImageNormalizationTests(unittest.TestCase):
     def test_extract_image_path_accepts_dict_and_string(self):
@@ -159,6 +203,65 @@ class XiaohuFormatterPathTests(unittest.TestCase):
         self.assertTrue(formatter.format_script.exists())
         self.assertEqual(formatter.format_script.name, "format.py")
         self.assertGreater(len(formatter.list_themes()), 0)
+
+
+class WechatClipboardTests(unittest.TestCase):
+    def test_cf_html_offsets_use_utf8_byte_positions(self):
+        script = r"""
+import { prepareForWechatClipboard } from './scripts/formatting/html-sanitizer.ts';
+const html = prepareForWechatClipboard('<h1>雷总大气</h1><p><strong>7亿tokens到手</strong>，我准备搞点事情。</p>');
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const bytes = encoder.encode(html);
+const get = (name) => Number(html.match(new RegExp(name + ':(\\d{10})'))[1]);
+const startHtml = get('StartHTML');
+const endHtml = get('EndHTML');
+const startFragment = get('StartFragment');
+const endFragment = get('EndFragment');
+console.log(JSON.stringify({
+  startsWithHtml: decoder.decode(bytes.slice(startHtml, startHtml + 6)) === '<html>',
+  fragmentStart: decoder.decode(bytes.slice(startFragment, startFragment + 20)),
+  fragmentEnd: decoder.decode(bytes.slice(endFragment - 18, endFragment)),
+  endMatchesByteLength: endHtml === bytes.length,
+  containsChinese: html.includes('雷总大气') && html.includes('我准备搞点事情'),
+}));
+"""
+        result = subprocess.run(
+            ["bun", "-e", script],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+
+        self.assertTrue(payload["startsWithHtml"])
+        self.assertEqual(payload["fragmentStart"], "<!--StartFragment-->")
+        self.assertEqual(payload["fragmentEnd"], "<!--EndFragment-->")
+        self.assertTrue(payload["endMatchesByteLength"])
+        self.assertTrue(payload["containsChinese"])
+
+    def test_windows_html_clipboard_uses_raw_utf8_bytes(self):
+        source = (POSTING_DIR / "copy-to-clipboard.ts").read_text(encoding="utf-8")
+        start = source.index("async function copyHtmlWindows")
+        end = source.index("async function copyImageToClipboard")
+        copy_html_windows = source[start:end]
+
+        self.assertIn('RegisterClipboardFormat("HTML Format")', copy_html_windows)
+        self.assertIn("[System.IO.File]::ReadAllBytes", copy_html_windows)
+        self.assertIn("SetClipboardData(format, hGlobal)", copy_html_windows)
+        self.assertIn("public static void SetHtml(byte[] bytes)", copy_html_windows)
+        self.assertIn("[NativeClipboard]::SetHtml($bytes)", copy_html_windows)
+        self.assertNotIn("[UIntPtr]($bytes.Length + 1)", copy_html_windows)
+        self.assertNotIn("Clipboard]::SetText", copy_html_windows)
+        self.assertNotIn("TextDataFormat]::Html", copy_html_windows)
+
+    def test_browser_paste_verifies_chinese_text_integrity(self):
+        source = (POSTING_DIR / "wechat-article.ts").read_text(encoding="utf-8")
+
+        self.assertIn("expectedCjkSamples", source)
+        self.assertIn("hasReplacementChars", source)
+        self.assertIn("Body pasted with corrupted Chinese text", source)
 
 
 class DiscoverySourceTests(unittest.TestCase):

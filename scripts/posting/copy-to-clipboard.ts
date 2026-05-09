@@ -242,10 +242,59 @@ async function copyImageWindows(imagePath: string): Promise<void> {
 async function copyHtmlWindows(htmlFilePath: string): Promise<void> {
   const escaped = htmlFilePath.replace(/'/g, "''");
   const ps = [
-    'Add-Type -AssemblyName System.Windows.Forms',
-    `$html = Get-Content -Raw -LiteralPath '${escaped}'`,
-    '[System.Windows.Forms.Clipboard]::SetText($html, [System.Windows.Forms.TextDataFormat]::Html)',
-  ].join('; ');
+    'Add-Type @\'',
+    'using System;',
+    'using System.Runtime.InteropServices;',
+    'public static class NativeClipboard {',
+    '  const uint GMEM_MOVEABLE = 0x0002;',
+    '  const uint GMEM_ZEROINIT = 0x0040;',
+    '  [DllImport("user32.dll", SetLastError = true)] public static extern bool OpenClipboard(IntPtr hWndNewOwner);',
+    '  [DllImport("user32.dll", SetLastError = true)] public static extern bool EmptyClipboard();',
+    '  [DllImport("user32.dll", SetLastError = true)] public static extern bool CloseClipboard();',
+    '  [DllImport("user32.dll", SetLastError = true)] public static extern uint RegisterClipboardFormat(string lpszFormat);',
+    '  [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);',
+    '  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);',
+    '  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalLock(IntPtr hMem);',
+    '  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GlobalUnlock(IntPtr hMem);',
+    '  [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GlobalFree(IntPtr hMem);',
+    '  static Exception Win32(string operation) {',
+    '    return new InvalidOperationException(operation + " failed: " + Marshal.GetLastWin32Error());',
+    '  }',
+    '  public static void SetHtml(byte[] bytes) {',
+    '    uint format = RegisterClipboardFormat("HTML Format");',
+    '    if (format == 0) throw Win32("RegisterClipboardFormat");',
+    '    IntPtr hGlobal = IntPtr.Zero;',
+    '    try {',
+    '      hGlobal = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, new UIntPtr((uint)bytes.Length + 1u));',
+    '      if (hGlobal == IntPtr.Zero) throw Win32("GlobalAlloc");',
+    '      IntPtr target = GlobalLock(hGlobal);',
+    '      if (target == IntPtr.Zero) throw Win32("GlobalLock");',
+    '      Marshal.Copy(bytes, 0, target, bytes.Length);',
+    '      Marshal.WriteByte(IntPtr.Add(target, bytes.Length), 0);',
+    '      GlobalUnlock(hGlobal);',
+    '      IntPtr result = SetClipboardData(format, hGlobal);',
+    '      if (result == IntPtr.Zero) throw Win32("SetClipboardData");',
+    '      hGlobal = IntPtr.Zero;',
+    '    } finally {',
+    '      if (hGlobal != IntPtr.Zero) GlobalFree(hGlobal);',
+    '    }',
+    '  }',
+    '}',
+    '\'@',
+    `$bytes = [System.IO.File]::ReadAllBytes('${escaped}')`,
+    '$opened = $false',
+    'for ($i = 0; $i -lt 10; $i++) {',
+    '  if ([NativeClipboard]::OpenClipboard([IntPtr]::Zero)) { $opened = $true; break }',
+    '  Start-Sleep -Milliseconds 100',
+    '}',
+    'if (-not $opened) { throw "OpenClipboard failed: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" }',
+    'try {',
+    '  if (-not [NativeClipboard]::EmptyClipboard()) { throw "EmptyClipboard failed: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" }',
+    '  [NativeClipboard]::SetHtml($bytes)',
+    '} finally {',
+    '  [NativeClipboard]::CloseClipboard() | Out-Null',
+    '}',
+  ].join('\n');
   await runCommand('powershell.exe', ['-NoProfile', '-Sta', '-Command', ps]);
 }
 
@@ -377,4 +426,3 @@ await main().catch((err) => {
   console.error(`Error: ${message}`);
   process.exit(1);
 });
-

@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { loadWechatExtendConfig, resolveAccount, loadCredentials } from "./wechat-extend-config.ts";
+import { convertMarkdown } from "./md-to-wechat.ts";
 
 interface AccessTokenResponse {
   access_token?: string;
@@ -310,37 +309,15 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, string
   return { frontmatter, body: match[2]! };
 }
 
-function renderMarkdownWithPlaceholders(
+async function renderMarkdownWithPlaceholders(
   markdownPath: string,
   theme: string = "default",
   color?: string,
   citeStatus: boolean = true,
   title?: string,
-): MarkdownRenderResult {
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-  const mdToWechatScript = path.join(__dirname, "md-to-wechat.ts");
-  const baseDir = path.dirname(markdownPath);
-
-  const args = ["-y", "bun", mdToWechatScript, markdownPath];
-  if (title) args.push("--title", title);
-  if (theme) args.push("--theme", theme);
-  if (color) args.push("--color", color);
-  if (!citeStatus) args.push("--no-cite");
-
+): Promise<MarkdownRenderResult> {
   console.error(`[wechat-api] Rendering markdown with placeholders via md-to-wechat: ${theme}${color ? `, color: ${color}` : ""}, citeStatus: ${citeStatus}`);
-  const result = spawnSync("npx", args, {
-    stdio: ["inherit", "pipe", "pipe"],
-    cwd: baseDir,
-  });
-
-  if (result.status !== 0) {
-    const stderr = result.stderr?.toString() || "";
-    throw new Error(`Markdown placeholder render failed: ${stderr}`);
-  }
-
-  const stdout = result.stdout?.toString() || "";
-  return JSON.parse(stdout) as MarkdownRenderResult;
+  return await convertMarkdown(markdownPath, { title, theme, color, citeStatus });
 }
 
 function replaceAllPlaceholders(html: string, placeholder: string, replacement: string): string {
@@ -452,6 +429,8 @@ function parseArgs(argv: string[]): CliArgs {
       args.author = argv[++i];
     } else if (arg === "--summary" && argv[i + 1]) {
       args.summary = argv[++i];
+    } else if ((arg === "--markdown" || arg === "--html") && argv[i + 1]) {
+      args.filePath = argv[++i]!;
     } else if (arg === "--theme" && argv[i + 1]) {
       args.theme = argv[++i]!;
     } else if (arg === "--color" && argv[i + 1]) {
@@ -540,7 +519,7 @@ async function main(): Promise<void> {
     if (!digest) digest = frontmatter.digest || frontmatter.summary || frontmatter.description || "";
 
     console.error(`[wechat-api] Theme: ${args.theme}${args.color ? `, color: ${args.color}` : ""}, citeStatus: ${args.citeStatus}`);
-    const rendered = renderMarkdownWithPlaceholders(filePath, args.theme, args.color, args.citeStatus, args.title);
+    const rendered = await renderMarkdownWithPlaceholders(filePath, args.theme, args.color, args.citeStatus, args.title);
     htmlPath = rendered.htmlPath;
     contentImages = rendered.contentImages;
     if (!title) title = rendered.title;

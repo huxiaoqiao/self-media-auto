@@ -16,6 +16,10 @@ interface TransformRule {
   replacement: string | ((match: string, ...args: string[]) => string);
 }
 
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
 /**
  * Convert Xiaohu HTML to WeChat-compatible HTML
  */
@@ -209,25 +213,29 @@ export function wrapForClipboard(html: string): string {
   const fragment = `<!--StartFragment-->${html}<!--EndFragment-->`;
   const fullHtml = `<html><body>${fragment}</body></html>`;
 
-  const startOffset = `Version:0.9
-StartHTML:0000000000
-EndHTML:0000000000
-StartFragment:0000000000
-EndFragment:0000000000
-`.length;
+  const headerTemplate = [
+    'Version:0.9',
+    'StartHTML:0000000000',
+    'EndHTML:0000000000',
+    'StartFragment:0000000000',
+    'EndFragment:0000000000',
+    '',
+  ].join('\r\n');
 
-  const htmlStart = fullHtml.indexOf('<html>');
-  const fragmentStart = fullHtml.indexOf('<!--StartFragment-->');
-  const fragmentEnd = fullHtml.indexOf('<!--EndFragment-->') + '<!--EndFragment-->'.length;
+  const startOffset = byteLength(headerTemplate);
+  const htmlStart = byteLength(fullHtml.slice(0, fullHtml.indexOf('<html>')));
+  const fragmentStart = byteLength(fullHtml.slice(0, fullHtml.indexOf('<!--StartFragment-->')));
+  const fragmentEnd = byteLength(fullHtml.slice(0, fullHtml.indexOf('<!--EndFragment-->') + '<!--EndFragment-->'.length));
+  const totalLength = byteLength(fullHtml) + startOffset;
 
-  const totalLength = fullHtml.length + startOffset;
-
-  return `Version:0.9
-StartHTML:${String(htmlStart + startOffset).padStart(10, '0')}
-EndHTML:${String(totalLength).padStart(10, '0')}
-StartFragment:${String(fragmentStart + startOffset).padStart(10, '0')}
-EndFragment:${String(fragmentEnd + startOffset).padStart(10, '0')}
-${fullHtml}`;
+  return [
+    'Version:0.9',
+    `StartHTML:${String(htmlStart + startOffset).padStart(10, '0')}`,
+    `EndHTML:${String(totalLength).padStart(10, '0')}`,
+    `StartFragment:${String(fragmentStart + startOffset).padStart(10, '0')}`,
+    `EndFragment:${String(fragmentEnd + startOffset).padStart(10, '0')}`,
+    '',
+  ].join('\r\n') + fullHtml;
 }
 
 /**

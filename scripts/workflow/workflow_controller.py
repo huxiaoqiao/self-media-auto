@@ -1694,12 +1694,18 @@ class SelfMediaController:
             args = [bun_path, script] if bun_path else [npx_cmd, "-y", "bun", script]
 
             if is_html:
-                # wechat-api.ts 把 HTML 文件作为位置参数，不支持 --html
-                args.append(draft_file)
+                if method == "browser":
+                    args.extend(["--html", draft_file])
+                else:
+                    # API mode keeps using the positional path for compatibility.
+                    args.append(draft_file)
                 # HTML 文件内的图片已经在 post_to_wechat 开头处理过了（IMG placeholder 替换）
                 # cover 单独传
             else:
-                args.extend(["--markdown", draft_file, "--theme", wechat_theme])
+                if method == "browser":
+                    args.extend(["--markdown", draft_file, "--theme", wechat_theme])
+                else:
+                    args.extend([draft_file, "--theme", wechat_theme])
             if cover_path and _os.path.exists(cover_path): args.extend(["--cover", _os.path.abspath(cover_path)])
             if title: args.extend(["--title", title])
 
@@ -1767,7 +1773,7 @@ class SelfMediaController:
 
     def run_post(self, method="api"):
         """
-        [v1.2] 发布到公众号（API 模式）
+        [v1.2] 发布到公众号
         流程：LLM 推荐 1-2 个主题 → 为每个主题分别生成 HTML → 每个 HTML 调用一次 post_to_wechat 保存草稿
         """
         logger.info("启动 run_post | method=%s", method)
@@ -1786,7 +1792,7 @@ class SelfMediaController:
         cover_path = state.get('cover_image')
         article_images = state.get('article_images', [])
 
-        # Xiaohu 排版：API 模式，不弹浏览器，直接按推荐主题批量生成
+        # Xiaohu 排版：先按推荐主题批量生成 HTML，再交给指定发布方式处理
         html_files = []
         if WEWRITE_XIAOHU_AVAILABLE:
             try:
@@ -1862,7 +1868,7 @@ class SelfMediaController:
                     final_content = '\n'.join(md_lines)
                     print(f"🖼️ 已在正文中插入 {len(article_images)} 个图片占位符")
 
-                print(f"🎨 启动 Xiaohu 排版引擎（API 模式）...")
+                print(f"🎨 启动 Xiaohu 排版引擎...")
                 available_themes = xiaohu_formatter.list_themes()
                 recommended_themes = self._recommend_themes(final_content, available_themes)
 

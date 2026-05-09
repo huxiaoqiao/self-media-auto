@@ -137,7 +137,7 @@ def build_topic_list_card(topics: list, industry: str = "") -> dict:
     for i, t in enumerate(topics):
         topic_num = i + 1
         title = str(t.get('title', '未知')).strip()
-        topic_url = t.get('url', '') or t.get('id', '')
+        topic_url = t.get('url', '') or t.get('content_url', '') or t.get('id', '')
         if title.startswith('http'):
             title = f"链接 {topic_num}"
         guid = t.get('guid', str(topic_num))

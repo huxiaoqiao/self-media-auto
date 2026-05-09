@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import {
   extractSummaryFromBody,
@@ -164,7 +165,9 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(result, null, 2));
 }
 
-await main().catch((error) => {
-  console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
-});
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  await main().catch((error) => {
+    console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}
